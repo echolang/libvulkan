@@ -41,6 +41,11 @@ private function defaultExts() : array<string>
     $a[] = 'VK_KHR_swapchain';
     $a[] = 'VK_KHR_portability_enumeration';
     $a[] = 'VK_KHR_portability_subset';
+    $a[] = 'VK_KHR_dynamic_rendering';
+    $a[] = 'VK_KHR_synchronization2';
+    $a[] = 'VK_KHR_timeline_semaphore';
+    $a[] = 'VK_KHR_copy_commands2';
+    $a[] = 'VK_EXT_extended_dynamic_state';
     $a[] = 'VK_EXT_debug_utils';
     $a[] = 'VK_EXT_metal_surface';
     $a[] = 'VK_MVK_macos_surface';

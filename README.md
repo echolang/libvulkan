@@ -79,6 +79,8 @@ Vulkan is three tables pretending to be one API.
 
 `load` / `loadInstance` / `loadDevice` return how many slots resolved. A second load overwrites only what resolves this time. It cannot unbind. A null from getproc leaves the die-stub.
 
+The Echo name is the core 1.3 name. `load*` also tries every `vk.xml` command alias that points at that name (`vkCmdBeginRenderingKHR` into `CmdBeginRendering`, and so on). One table slot. There is no `CmdBeginRenderingKHR` wrapper. A 1.2 MoltenVK with `VK_KHR_dynamic_rendering` enabled fills the core slot. A missing name is still the die.
+
 Here is the catch: load does not fail if half the table is missing. It counts. I understand some people want a result per name. I don't.
 
 ### loadDefault and the ICD
@@ -117,15 +119,16 @@ vk::load(&glfw::getInstanceProcAddress);
 
 Newer MoltenVK wants `VK_KHR_portability_enumeration` on the instance, flag `INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR`, and `VK_KHR_portability_subset` on the device. Older copies (this machine's 2023 dylib) do not advertise that extension and will reject it. Enumerate instance extensions and only enable what is there. `examples/devices` does that.
 
-Extension names are C strings. `ppEnabledExtensionNames` is `ptr<ptr<const uint8>>`. You take the address of a `cstr`. You do not pass the Echo string itself.
+Extension names are C strings. The generator emits `*_EXTENSION_NAME` constants for every folded extension, including the 1.3 promotions (`KHR_DYNAMIC_RENDERING_EXTENSION_NAME`, `KHR_SYNCHRONIZATION_2_EXTENSION_NAME`, ...). `ppEnabledExtensionNames` is `ptr<ptr<const uint8>>`. You take the address of a `cstr`. You do not pass the Echo string itself.
 
 ```echo
-string $portability = 'VK_KHR_portability_enumeration';
-ptr<const uint8> $ext0 = $portability->cstr();
+ptr<const uint8> $ext0 = vk::KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME->cstr();
 $info->flags = vk::INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 $info->enabledExtensionCount = 1;
 $info->ppEnabledExtensionNames:$ = &$ext0;
 ```
+
+On a 1.2 device you enable the KHR/EXT names and call the core Echo functions. Feature structs (`PhysicalDeviceDynamicRenderingFeatures`, ...) already exist under those core names; `sType` values match the KHR aliases.
 
 ## Types
 
@@ -149,21 +152,23 @@ ptr<uint8> $name = &$props->deviceName[0];
 string $s = str::from(ptr<const uint8>($name:$));
 ```
 
-Unions keep the largest member (first on a tie) and pad to the C union size. `ClearColorValue` is four floats. `ClearValue` is that color. The depth/stencil arm is gone; write a color clear, or put a `ClearDepthStencilValue` in a struct that actually has that field.
+Unions keep the largest member (first on a tie) as storage, and pad to the C union size. Echo has no C union, so the other arms are labelled constructors that overlay those bytes onto the start of the storage. `ClearColorValue` is four floats. `ClearValue` is that color, or a depth/stencil write:
 
 ```echo
 vk::ClearValue $clear = vk::ClearValue();
 $clear->color->float32[0] = 0.25f;
 $clear->color->float32[3] = 1.0f;
+
+vk::ClearValue $depth = vk::ClearValue(depth: 1.0f, stencil: 0);
 ```
 
 Wrappers are `#[inline]`. They do one thing: peel handles and call the function pointer in the table.
 
 ## Generating
 
-The committed `src/vk.eco` is Vulkan **1.3** plus the WSI, portability, and debug extensions the generator defaults to:
+The committed `src/vk.eco` is Vulkan **1.3** plus the WSI, portability, debug, and 1.3-promotion extensions the generator defaults to:
 
-`VK_KHR_surface`, `VK_KHR_swapchain`, `VK_KHR_portability_enumeration`, `VK_KHR_portability_subset`, `VK_EXT_debug_utils`, `VK_EXT_metal_surface`, `VK_MVK_macos_surface`, `VK_KHR_xcb_surface`, `VK_KHR_xlib_surface`, `VK_KHR_win32_surface`.
+`VK_KHR_surface`, `VK_KHR_swapchain`, `VK_KHR_portability_enumeration`, `VK_KHR_portability_subset`, `VK_KHR_dynamic_rendering`, `VK_KHR_synchronization2`, `VK_KHR_timeline_semaphore`, `VK_KHR_copy_commands2`, `VK_EXT_extended_dynamic_state`, `VK_EXT_debug_utils`, `VK_EXT_metal_surface`, `VK_MVK_macos_surface`, `VK_KHR_xcb_surface`, `VK_KHR_xlib_surface`, `VK_KHR_win32_surface`.
 
 The generator is a target of this module, written in Echo:
 

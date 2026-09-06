@@ -215,7 +215,7 @@ private function baseEcho(
                 return .ok('int32');
             }
 
-            if ($canon == 'VkFlags64' || $canon->ends('Flags2') || $canon->ends('FlagBits2')) {
+            if (reg::isWideFlags($reg, $canon)) {
                 return .ok('uint64');
             }
 

@@ -1,0 +1,309 @@
+/**
+ * C unions as Echo structs: keep the largest arm as storage, pad to the
+ * union size, and emit labelled constructors that overlay the other arms
+ * onto those bytes.
+ */
+
+namespace vkgen::emit;
+
+use vkgen::reg;
+use vkgen::feat;
+use vkgen::types;
+use vkgen::Error;
+
+internal struct UnionLayout
+{
+    public array<reg::Member> $fields;
+    public int32 $storageIndex;
+
+    public constructor()
+    {
+        $this->fields = array<reg::Member>();
+        $this->storageIndex = 0;
+    }
+}
+
+internal function unionMembersToEmit(
+    const feat::Folded& $folded,
+    const reg::Registry& $reg,
+    const reg::TypeDef& $td
+) : result<UnionLayout, Error>
+{
+    $out = UnionLayout();
+
+    if ($td->members->count() == 0) {
+        return .ok($out);
+    }
+
+    int32 $bestI = 0;
+    int32 $bestSize = -1;
+    int32 $maxSize = 0;
+    int32 $maxAlign = 1;
+    usize $m = 0;
+
+    while ($m < $td->members->count()) {
+        $sa = guard declSizeAlign($folded, $reg, $td->members[$m]->decl, $td->name, 0) else ($e) {
+            return .error($e);
+        }
+
+        if ($sa->size > $bestSize) {
+            $bestSize = $sa->size;
+            $bestI = $m as int32;
+        }
+
+        if ($sa->size > $maxSize) {
+            $maxSize = $sa->size;
+        }
+
+        if ($sa->align > $maxAlign) {
+            $maxAlign = $sa->align;
+        }
+
+        $m = $m + 1;
+    }
+
+    $out->storageIndex = $bestI;
+    $out->fields[] = $td->members[$bestI as usize];
+    int32 $unionSize = alignUp($maxSize, $maxAlign);
+
+    if ($bestSize < $unionSize) {
+        $pad = reg::Member();
+        $pad->decl->base = 'uint8_t';
+        $pad->decl->arrayN = $unionSize - $bestSize;
+        $pad->decl->name = '_unionPad';
+        $out->fields[] = $pad;
+    }
+
+    return .ok($out);
+}
+
+internal function emitUnionConstructors(
+    string& $out,
+    const feat::Folded& $folded,
+    const reg::Registry& $reg,
+    const reg::TypeDef& $td,
+    const UnionLayout& $layout,
+    const array<string>& $zeroAssigns
+) : result<bool, Error>
+{
+    if ($layout->fields->count() == 0) {
+        return .ok(true);
+    }
+
+    string $storage = feat::paramName($layout->fields[0]->decl->name, 0);
+    usize $m = 0;
+
+    while ($m < $td->members->count()) {
+        if ($m == $layout->storageIndex as usize) {
+            $m = $m + 1;
+            continue;
+        }
+
+        $arm = $td->members[$m];
+        int32 $bytes = guard memberByteSize($folded, $reg, $arm->decl, $td->name) else ($e) {
+            return .error($e);
+        }
+
+        if ($bytes <= 0) {
+            $m = $m + 1;
+            continue;
+        }
+
+        array<reg::Member> $flat = flattenArmMembers($reg, $arm);
+        $out->append('\n');
+
+        if ($flat->count() > 0) {
+            $wrote = guard emitFlatArmConstructor(
+                $out,
+                $folded,
+                $reg,
+                $td,
+                $arm,
+                $flat,
+                $storage,
+                $zeroAssigns,
+                $bytes
+            ) else ($e) {
+                return .error($e);
+            }
+        } else {
+            $wrote = guard emitWholeArmConstructor(
+                $out,
+                $folded,
+                $reg,
+                $td,
+                $arm,
+                $m,
+                $storage,
+                $zeroAssigns,
+                $bytes
+            ) else ($e) {
+                return .error($e);
+            }
+        }
+
+        $m = $m + 1;
+    }
+
+    return .ok(true);
+}
+
+private function flattenArmMembers(const reg::Registry& $reg, const reg::Member& $arm) : array<reg::Member>
+{
+    array<reg::Member> $none = array<reg::Member>();
+
+    if ($arm->decl->stars != 0) {
+        return $none;
+    }
+
+    if (types::scalarC($arm->decl->base) != '') {
+        return $none;
+    }
+
+    $canon = guard reg::resolveTypeName($reg, $arm->decl->base) else {
+        return $none;
+    }
+
+    if (!$reg->types->has($canon)) {
+        return $none;
+    }
+
+    $td = $reg->types->get($canon);
+
+    if ($td->kind != reg::TypeKind::structure) {
+        return $none;
+    }
+
+    if ($td->members->count() == 0) {
+        return $none;
+    }
+
+    usize $i = 0;
+
+    while ($i < $td->members->count()) {
+        $mem = $td->members[$i];
+
+        if ($mem->decl->stars != 0 || types::scalarC($mem->decl->base) == '') {
+            return $none;
+        }
+
+        $i = $i + 1;
+    }
+
+    return $td->members;
+}
+
+private function emitFlatArmConstructor(
+    string& $out,
+    const feat::Folded& $folded,
+    const reg::Registry& $reg,
+    const reg::TypeDef& $td,
+    const reg::Member& $arm,
+    const array<reg::Member>& $flat,
+    const string& $storage,
+    const array<string>& $zeroAssigns,
+    int32 $bytes
+) : result<bool, Error>
+{
+    $canon = guard reg::resolveTypeName($reg, $arm->decl->base) else ($e) {
+        return .error($e);
+    }
+    $armTy = guard feat::stripType($canon) else ($e) {
+        return .error($e);
+    }
+
+    string $params = '';
+    usize $f = 0;
+
+    while ($f < $flat->count()) {
+        $mem = $flat[$f];
+        $elem = guard feat::mapFieldElem($reg, $folded, $mem->decl, $td->name) else ($e) {
+            return .error($e);
+        }
+        int32 $arrayN = guard memberArrayN($folded, $reg, $mem->decl, $td->name) else ($e) {
+            return .error($e);
+        }
+        string $ty = $elem;
+
+        if ($arrayN > 0) {
+            $ty = "{$elem}[{$arrayN}]";
+        }
+
+        $fname = feat::paramName($mem->decl->name, $f);
+
+        if ($f > 0) {
+            $params->append(', ');
+        }
+
+        $params->append("{$fname}: {$ty} ${$fname}");
+        $f = $f + 1;
+    }
+
+    $out->append("    public constructor({$params})\n");
+    $out->append("    {\n");
+    appendZeroAssigns($out, $zeroAssigns);
+    $out->append("        {$armTy} $arm = {$armTy}();\n");
+    $f = 0;
+
+    while ($f < $flat->count()) {
+        $fname = feat::paramName($flat[$f]->decl->name, $f);
+        $out->append("        $arm->{$fname} = ${$fname};\n");
+        $f = $f + 1;
+    }
+
+    appendOverlay($out, $storage, '$arm', $bytes);
+    $out->append("    }\n");
+
+    return .ok(true);
+}
+
+private function emitWholeArmConstructor(
+    string& $out,
+    const feat::Folded& $folded,
+    const reg::Registry& $reg,
+    const reg::TypeDef& $td,
+    const reg::Member& $arm,
+    usize $index,
+    const string& $storage,
+    const array<string>& $zeroAssigns,
+    int32 $bytes
+) : result<bool, Error>
+{
+    $elem = guard feat::mapFieldElem($reg, $folded, $arm->decl, $td->name) else ($e) {
+        return .error($e);
+    }
+    int32 $arrayN = guard memberArrayN($folded, $reg, $arm->decl, $td->name) else ($e) {
+        return .error($e);
+    }
+    string $ty = $elem;
+
+    if ($arrayN > 0) {
+        $ty = "{$elem}[{$arrayN}]";
+    }
+
+    $fname = feat::paramName($arm->decl->name, $index);
+    $out->append("    public constructor({$fname}: {$ty} ${$fname})\n");
+    $out->append("    {\n");
+    appendZeroAssigns($out, $zeroAssigns);
+    $out->append("        {$ty} $arm = ${$fname};\n");
+    appendOverlay($out, $storage, '$arm', $bytes);
+    $out->append("    }\n");
+
+    return .ok(true);
+}
+
+private function appendZeroAssigns(string& $out, const array<string>& $assigns) : void
+{
+    usize $p = 0;
+
+    while ($p < $assigns->count()) {
+        $out->append($assigns[$p]);
+        $p = $p + 1;
+    }
+}
+
+private function appendOverlay(string& $out, const string& $storage, const string& $src, int32 $bytes) : void
+{
+    $n = $bytes as uint64;
+    $out->append("        mem::copy<uint8>(ptr<uint8>(&$this->{$storage}), ptr<uint8>(&{$src}), {$n});\n");
+}

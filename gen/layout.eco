@@ -1,7 +1,5 @@
 /**
- * C layout sizes for union emission: keep the largest arm, pad to the
- * union's aligned size. Pointers and handles are 8 bytes (this binding
- * is 64-bit).
+ * C layout sizes. Pointers and handles are 8 bytes (this binding is 64-bit).
  */
 
 namespace vkgen::emit;
@@ -49,60 +47,21 @@ internal function memberArrayN(
     return .error(.unresolvedArray($where, $d->arrayEnum));
 }
 
-internal function unionMembersToEmit(
+internal function memberByteSize(
     const feat::Folded& $folded,
     const reg::Registry& $reg,
-    const reg::TypeDef& $td
-) : result<array<reg::Member>, Error>
+    const types::CDecl& $d,
+    const string& $where
+) : result<int32, Error>
 {
-    array<reg::Member> $out = array<reg::Member>();
-
-    if ($td->members->count() == 0) {
-        return .ok($out);
+    $sa = guard declSizeAlign($folded, $reg, $d, $where, 0) else ($e) {
+        return .error($e);
     }
 
-    int32 $bestI = 0;
-    int32 $bestSize = -1;
-    int32 $maxSize = 0;
-    int32 $maxAlign = 1;
-    usize $m = 0;
-
-    while ($m < $td->members->count()) {
-        $sa = guard declSizeAlign($folded, $reg, $td->members[$m]->decl, $td->name, 0) else ($e) {
-            return .error($e);
-        }
-
-        if ($sa->size > $bestSize) {
-            $bestSize = $sa->size;
-            $bestI = $m as int32;
-        }
-
-        if ($sa->size > $maxSize) {
-            $maxSize = $sa->size;
-        }
-
-        if ($sa->align > $maxAlign) {
-            $maxAlign = $sa->align;
-        }
-
-        $m = $m + 1;
-    }
-
-    $out[] = $td->members[$bestI as usize];
-    int32 $unionSize = alignUp($maxSize, $maxAlign);
-
-    if ($bestSize < $unionSize) {
-        $pad = reg::Member();
-        $pad->decl->base = 'uint8_t';
-        $pad->decl->arrayN = $unionSize - $bestSize;
-        $pad->decl->name = '_unionPad';
-        $out[] = $pad;
-    }
-
-    return .ok($out);
+    return .ok($sa->size);
 }
 
-private function declSizeAlign(
+internal function declSizeAlign(
     const feat::Folded& $folded,
     const reg::Registry& $reg,
     const types::CDecl& $d,
@@ -180,7 +139,7 @@ private function namedSizeAlign(
     }
 
     if ($td->kind == reg::TypeKind::enumeration || $td->kind == reg::TypeKind::bitmask) {
-        if ($canon == 'VkFlags64' || $canon->ends('Flags2') || $canon->ends('FlagBits2')) {
+        if (reg::isWideFlags($reg, $canon)) {
             return .ok(SizeAlign(8, 8));
         }
 
@@ -269,7 +228,7 @@ private function scalarSizeAlign(const string& $echo) : SizeAlign
     return SizeAlign(4, 4);
 }
 
-private function alignUp(int32 $n, int32 $a) : int32
+internal function alignUp(int32 $n, int32 $a) : int32
 {
     if ($a <= 1) {
         return $n;

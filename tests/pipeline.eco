@@ -57,6 +57,9 @@ internal function toyXml() : string
     $s->append('<enums name="VkPipelineCreateFlagBits" type="bitmask">');
     $s->append('<enum bitpos="0" name="VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT"/>');
     $s->append('</enums>');
+    $s->append('<enums name="VkWideBits" type="bitmask" bitwidth="64">');
+    $s->append('<enum bitpos="0" name="VK_WIDE_SMALL"/>');
+    $s->append('</enums>');
     $s->append('<commands>');
     $s->append('<command>');
     $s->append('<proto><type>VkResult</type> <name>vkCreateInstance</name></proto>');
@@ -78,6 +81,7 @@ internal function toyXml() : string
     $s->append('<proto>void <name>vkOnlyIn11</name></proto>');
     $s->append('<param><type>VkInstance</type> <name>instance</name></param>');
     $s->append('</command>');
+    $s->append('<command name="vkOnlyIn11KHR" alias="vkOnlyIn11"/>');
     $s->append('</commands>');
     $s->append('<feature api="vulkan" name="VK_VERSION_1_0" number="1.0">');
     $s->append('<require>');
@@ -100,6 +104,8 @@ internal function toyXml() : string
     $s->append('<enum name="VK_STRUCTURE_TYPE_APPLICATION_INFO"/>');
     $s->append('<enum name="VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO"/>');
     $s->append('<enum name="VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT"/>');
+    $s->append('<enum name="VK_WIDE_SMALL"/>');
+    $s->append('<enum bitpos="5" extends="VkWideBits" name="VK_WIDE_EXTRA"/>');
     $s->append('<command name="vkCreateInstance"/>');
     $s->append('<command name="vkDestroyInstance"/>');
     $s->append('<command name="vkDestroyDevice"/>');
@@ -271,6 +277,10 @@ test fold_version_and_extension
 
     $v11 = toyFold(1, $none);
     assert(hasCommand($v11, 'vkOnlyIn11'));
+    assert(!hasCommand($v11, 'vkOnlyIn11KHR'));
+    $only = commandNamed($v11, 'vkOnlyIn11');
+    assert($only->loadAliases->count() == 1);
+    assert($only->loadAliases[0] == 'vkOnlyIn11KHR');
 
     array<string> $exts = array<string>();
     $exts[] = 'VK_KHR_surface';
@@ -342,18 +352,45 @@ test emit_toy_module
     assert($em->source->contains('public uint8[256] $extensionName;'));
     assert($em->source->contains('public uint32 $sType = STRUCTURE_TYPE_APPLICATION_INFO;'));
     assert($em->source->contains('public float32[4] $float32;'));
-    assert(!$em->source->contains('$int32;'));
+    assert(!$em->source->contains('public int32[4] $int32;'));
+    assert($em->source->contains('public constructor(int32: int32[4] $int32)'));
     assert($em->source->contains('public uint64 $big = 0;'));
-    assert(!$em->source->contains('$small;'));
+    assert(!$em->source->contains('public uint32 $small'));
+    assert($em->source->contains('public constructor(small: uint32 $small)'));
     assert($em->source->contains('public uint8[5] $bytes;'));
     assert($em->source->contains('public uint8[3] $_unionPad;'));
-    assert(!$em->source->contains('$word;'));
+    assert(!$em->source->contains('public uint32 $word'));
+    assert($em->source->contains('public constructor(word: uint32 $word)'));
     assert($em->source->contains('public ptr<const uint8> $pNext;'));
     assert($em->source->contains('public function CreateInstance('));
     assert($em->source->contains('public function DestroyInstance('));
     assert($em->source->contains('public function DestroyDevice('));
     assert(!$em->source->contains('OnlyIn11'));
     assert($em->source->contains("die('vk: entry point called before vk::load, or unavailable in this ICD')"));
+    assert($em->source->contains('public const uint64 WIDE_SMALL'));
+    assert($em->source->contains('public const uint64 WIDE_EXTRA'));
+    assert(!$em->source->contains('public const uint32 WIDE_EXTRA'));
+}
+
+test emit_load_tries_command_alias
+{
+    array<string> $none = array<string>();
+    $reg = toyReg();
+    $f = toyFold(1, $none);
+    $banner = vkgen::emit::Banner();
+    $banner->invocation = 'generate --api vulkan --version 1.1';
+    $banner->api = 'vulkan';
+    $banner->version = '1.1';
+    $banner->registrySha = 'test';
+
+    $em = guard vkgen::emit::emitModule($f, $banner, $reg) else ($e) {
+        die($e->message());
+    }
+
+    assert($em->source->contains("'vkOnlyIn11'"));
+    assert($em->source->contains("'vkOnlyIn11KHR'"));
+    assert(!$em->source->contains('function OnlyIn11KHR'));
+    assert($em->source->contains('public function OnlyIn11('));
 }
 
 test is_handle_and_resolve

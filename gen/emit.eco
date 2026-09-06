@@ -10,7 +10,6 @@ namespace vkgen::emit;
 
 use vkgen::reg;
 use vkgen::feat;
-use vkgen::types;
 use vkgen::Error;
 
 internal const uint64 U32_MAX = 0xFFFFFFFF;
@@ -396,13 +395,16 @@ private function structs(
         $seenField = map<string, bool>();
         $assigns = array<string>();
         array<reg::Member> $members = $td->members;
+        UnionLayout $unionLayout = UnionLayout();
+        bool $isUnion = $td->kind == reg::TypeKind::union && $td->members->count() > 1;
 
-        if ($td->kind == reg::TypeKind::union && $members->count() > 1) {
-            array<reg::Member> $unionMems = guard unionMembersToEmit($folded, $reg, $td) else ($e) {
+        if ($isUnion) {
+            UnionLayout $laid = guard unionMembersToEmit($folded, $reg, $td) else ($e) {
                 return .error($e);
             }
 
-            $members = $unionMems;
+            $unionLayout = $laid;
+            $members = $laid->fields;
         }
 
         usize $m = 0;
@@ -442,7 +444,9 @@ private function structs(
             $m = $m + 1;
         }
 
-        if ($assigns->count() > 0) {
+        bool $needZero = $assigns->count() > 0 || $isUnion;
+
+        if ($needZero) {
             $out->append('\n');
             $out->append("    public constructor()\n");
             $out->append("    {\n");
@@ -454,6 +458,12 @@ private function structs(
             }
 
             $out->append("    }\n");
+        }
+
+        if ($isUnion) {
+            $wrote = guard emitUnionConstructors($out, $folded, $reg, $td, $unionLayout, $assigns) else ($e) {
+                return .error($e);
+            }
         }
 
         $out->append("}\n\n");
@@ -672,13 +682,17 @@ private function emitLoad(
         $field = $echo[$i];
         $line = "    $nm = '{$c->name}';\n";
         $out->append($line);
+        appendGetproc($out, $level);
+        usize $a = 0;
 
-        if ($level == reg::CmdLevel::global) {
-            $out->append("    $p:$ = $getproc($nm->cstr());\n");
-        } else if ($level == reg::CmdLevel::instance) {
-            $out->append("    $p:$ = $get($instance->handle, $nm->cstr());\n");
-        } else {
-            $out->append("    $p:$ = $get($device->handle, $nm->cstr());\n");
+        while ($a < $c->loadAliases->count()) {
+            $out->append("    if ($p:$ == null) {\n");
+            $line = "        $nm = '{$c->loadAliases[$a]}';\n";
+            $out->append($line);
+            $out->append('    ');
+            appendGetproc($out, $level);
+            $out->append("    }\n");
+            $a = $a + 1;
         }
 
         $out->append("    if ($p:$ != null) {\n");
@@ -691,6 +705,17 @@ private function emitLoad(
 
     $out->append("    return $n;\n");
     $out->append("}\n\n");
+}
+
+private function appendGetproc(string& $out, reg::CmdLevel $level) : void
+{
+    if ($level == reg::CmdLevel::global) {
+        $out->append("    $p:$ = $getproc($nm->cstr());\n");
+    } else if ($level == reg::CmdLevel::instance) {
+        $out->append("    $p:$ = $get($instance->handle, $nm->cstr());\n");
+    } else {
+        $out->append("    $p:$ = $get($device->handle, $nm->cstr());\n");
+    }
 }
 
 private function wrappers(string& $out, const feat::Folded& $folded, const array<string>& $echo) : void

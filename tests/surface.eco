@@ -34,6 +34,17 @@ test constants
     assert(vk::STRUCTURE_TYPE_APPLICATION_INFO == 0);
     assert(vk::INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR == 1);
     assert(vk::PIPELINE_CREATE_DISPATCH_BASE == vk::PIPELINE_CREATE_DISPATCH_BASE_BIT);
+    assert(vk::KHR_DYNAMIC_RENDERING_EXTENSION_NAME == 'VK_KHR_dynamic_rendering');
+    assert(vk::KHR_SYNCHRONIZATION_2_EXTENSION_NAME == 'VK_KHR_synchronization2');
+    assert(vk::KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME == 'VK_KHR_timeline_semaphore');
+    assert(vk::KHR_COPY_COMMANDS_2_EXTENSION_NAME == 'VK_KHR_copy_commands2');
+    assert(vk::EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME == 'VK_EXT_extended_dynamic_state');
+
+    uint64 $wide = vk::ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    assert($wide == 0x200000);
+    uint64 $mix = vk::ACCESS_2_SHADER_SAMPLED_READ_BIT | vk::ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    assert(($mix & vk::ACCESS_2_SHADER_SAMPLED_READ_BIT) != 0);
+    assert(($mix & vk::ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR) != 0);
 }
 
 test layout
@@ -83,6 +94,41 @@ test load_resolves_nothing
     assert(vk::load(&noneGetproc) == 0);
 }
 
+internal struct AliasHit
+{
+    public static int32 $n = 0;
+}
+
+private function sentinelBeginRendering(uint64 $cmd, ptr<const vk::RenderingInfo> $info) : void
+{
+    AliasHit::$n = AliasHit::$n + 1;
+}
+
+private function fakeDeviceProc(uint64 $device, ptr<const uint8> $name) : ptr<uint8>
+{
+    $s = str::from($name);
+
+    if ($s == 'vkCmdBeginRendering') {
+        return null;
+    }
+
+    if ($s == 'vkCmdBeginRenderingKHR') {
+        unsafe {
+            return &sentinelBeginRendering as ptr<uint8>;
+        }
+    }
+
+    return null;
+}
+
+test load_device_binds_command_alias
+{
+    vk::state::$commands->GetDeviceProcAddr = &fakeDeviceProc;
+    assert(vk::loadDevice(vk::Device::none()) == 1);
+    vk::CmdBeginRendering(vk::CommandBuffer::none(), null);
+    assert(AliasHit::$n == 1);
+}
+
 #[tests: expects death]
 test partial_load_leaves_other_entries_as_die
 {
@@ -116,6 +162,15 @@ test union_keeps_largest_member
     $c->float32[3] = 1.0f;
     assert($c->float32[0] == 1.0f);
     assert($c->float32[3] == 1.0f);
+}
+
+test union_depth_arm_overlays_storage
+{
+    vk::ClearValue $ds = vk::ClearValue(depth: 1.0f, stencil: 7);
+    vk::ClearDepthStencilValue $read = vk::ClearDepthStencilValue();
+    mem::copy<uint8>(ptr<uint8>(&$read), ptr<uint8>(&$ds), 8);
+    assert($read->depth == 1.0f);
+    assert($read->stencil == 7);
 }
 
 test make_api_version_packs_fields

@@ -140,6 +140,7 @@ public struct Command : Named
     public types::CDecl $retDecl;
     public array<types::CDecl> $argDecls;
     public CmdLevel $level;
+    public array<string> $loadAliases;
 
     public constructor()
     {
@@ -152,6 +153,7 @@ public struct Command : Named
         $this->retDecl = types::CDecl();
         $this->argDecls = array<types::CDecl>();
         $this->level = CmdLevel::global;
+        $this->loadAliases = array<string>();
     }
 
     public const function named() : string
@@ -221,6 +223,7 @@ public struct Registry
     public ordered_map<string, TypeDef> $types;
     public array<Feature> $features;
     public ordered_map<string, Extension> $extensions;
+    public map<string, int32> $enumBitwidth;
 
     public constructor()
     {
@@ -229,6 +232,7 @@ public struct Registry
         $this->types = ordered_map<string, TypeDef>();
         $this->features = array<Feature>();
         $this->extensions = ordered_map<string, Extension>();
+        $this->enumBitwidth = map<string, int32>();
     }
 }
 
@@ -317,6 +321,8 @@ public function parse(const string& $xml) : result<Registry, Error>
     if ($res->failed()) {
         return .error($res->failure());
     }
+
+    applyGroupBitwidth($reg);
 
     return .ok($reg);
 }
@@ -422,6 +428,43 @@ private function resolveAliases(Registry& $reg) : result<bool, Error>
     return .ok(true);
 }
 
+private function applyGroupBitwidth(Registry& $reg) : void
+{
+    foreach ($reg->enums as $name => $def) {
+        if ($def->kind != EnumKind::u32) {
+            continue;
+        }
+
+        string $group = $def->extends;
+
+        if ($group->empty()) {
+            $group = $def->group;
+        }
+
+        if ($group->empty()) {
+            continue;
+        }
+
+        if (isWideFlags($reg, $group)) {
+            $def->kind = EnumKind::u64;
+            $reg->enums[$name] = $def;
+        }
+    }
+}
+
+public function isWideFlags(const Registry& $reg, const string& $typeName) : bool
+{
+    if ($typeName == 'VkFlags64') {
+        return true;
+    }
+
+    if ($reg->enumBitwidth->has($typeName) && $reg->enumBitwidth->get($typeName) == 64) {
+        return true;
+    }
+
+    return $typeName->ends('Flags2') || $typeName->ends('FlagBits2');
+}
+
 public function apiAllows(const string& $supported, const string& $api) : bool
 {
     if ($supported->empty()) {
@@ -487,6 +530,29 @@ public function resolveTypeName(const Registry& $reg, const string& $name) : res
         }
 
         $n = $td->alias;
+        $i = $i + 1;
+    }
+
+    return .error(.unresolvedAlias($name, $n));
+}
+
+public function resolveCommandName(const Registry& $reg, const string& $name) : result<string, Error>
+{
+    string $n = $name;
+    int32 $i = 0;
+
+    while ($i < 8) {
+        if (!$reg->commands->has($n)) {
+            return .ok($n);
+        }
+
+        $cmd = $reg->commands->get($n);
+
+        if ($cmd->alias->empty()) {
+            return .ok($n);
+        }
+
+        $n = $cmd->alias;
         $i = $i + 1;
     }
 

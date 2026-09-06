@@ -279,6 +279,11 @@ internal function parseEnums(xml::Cursor& $c, const xml::Tag& $open, Registry& $
 
     string $groupKind = $open->attr('type');
     string $bitwidth = $open->attr('bitwidth');
+    string $groupName = $open->attr('name');
+
+    if ($bitwidth == '64' && !$groupName->empty()) {
+        $reg->enumBitwidth[$groupName] = 64;
+    }
 
     while (true) {
         $maybe = guard $c->nextNamed('enums', 'enum') else ($e) {
@@ -293,13 +298,13 @@ internal function parseEnums(xml::Cursor& $c, const xml::Tag& $open, Registry& $
             return .error($e);
         }
 
-        $def->group = $open->attr('name');
+        $def->group = $groupName;
 
         if ($bitwidth == '64' && $def->kind == EnumKind::u32) {
             $def->kind = EnumKind::u64;
         }
 
-        if ($groupKind == 'enum' && $open->attr('name') == 'VkResult' && $def->kind == EnumKind::u32) {
+        if ($groupKind == 'enum' && $groupName == 'VkResult' && $def->kind == EnumKind::u32) {
             $def->kind = EnumKind::i32;
         }
 

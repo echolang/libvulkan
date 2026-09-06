@@ -153,10 +153,8 @@ public function fold(
             continue;
         }
 
-        string $canon = $name;
-
-        if ($reg->commands->has($name) && !$reg->commands->get($name)->alias->empty()) {
-            $canon = $reg->commands->get($name)->alias;
+        $canon = guard reg::resolveCommandName($reg, $name) else ($err) {
+            return .error($err);
         }
 
         if (!$reg->commands->has($canon)) {
@@ -207,7 +205,95 @@ public function fold(
     sortNamed<reg::TypeDef>($out->handles);
     sortNamed<reg::TypeDef>($out->structs);
 
+    $aliased = collectLoadAliases($reg, $api, $out);
+
+    if ($aliased->failed()) {
+        return .error($aliased->failure());
+    }
+
     return .ok($out);
+}
+
+private function collectLoadAliases(const reg::Registry& $reg, const string& $api, Folded& $out) : result<bool, Error>
+{
+    map<string, usize> $at = map<string, usize>();
+    usize $i = 0;
+
+    while ($i < $out->commands->count()) {
+        $at[$out->commands[$i]->name] = $i;
+        $i = $i + 1;
+    }
+
+    foreach ($reg->commands as $aliasName => $cmd) {
+        if ($cmd->alias->empty()) {
+            continue;
+        }
+
+        if (!reg::apiAllows($cmd->api, $api)) {
+            continue;
+        }
+
+        $canon = guard reg::resolveCommandName($reg, $aliasName) else ($e) {
+            return .error($e);
+        }
+
+        if ($aliasName == $canon || !$at->has($canon)) {
+            continue;
+        }
+
+        usize $idx = $at->get($canon);
+        $held = $out->commands[$idx];
+
+        if (!hasString($held->loadAliases, $aliasName)) {
+            $held->loadAliases[] = $aliasName;
+            $out->commands[$idx] = $held;
+        }
+    }
+
+    $i = 0;
+
+    while ($i < $out->commands->count()) {
+        $held = $out->commands[$i];
+        sortStrings($held->loadAliases);
+        $out->commands[$i] = $held;
+        $i = $i + 1;
+    }
+
+    return .ok(true);
+}
+
+private function hasString(const array<string>& $xs, const string& $want) : bool
+{
+    foreach ($xs as $x) {
+        if ($x == $want) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+private function sortStrings(array<string>& $items) : void
+{
+    usize $n = $items->count();
+    usize $i = 1;
+
+    while ($i < $n) {
+        string $key = $items[$i];
+        usize $j = $i;
+
+        while ($j > 0) {
+            if (!lessBytes($key, $items[$j - 1])) {
+                break;
+            }
+
+            $items[$j] = $items[$j - 1];
+            $j = $j - 1;
+        }
+
+        $items[$j] = $key;
+        $i = $i + 1;
+    }
 }
 
 private function applySets(
