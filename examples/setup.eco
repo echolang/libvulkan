@@ -1,0 +1,585 @@
+/**
+ * shared GLFW + instance + device + swapchain boot for the windowed
+ * examples. dies on failure. not a renderer
+ */
+
+internal struct Names
+{
+    public static string $portability = 'VK_KHR_portability_enumeration';
+    public static string $subset = 'VK_KHR_portability_subset';
+    public static string $swapchain = 'VK_KHR_swapchain';
+}
+
+internal struct Context
+{
+    public ptr<glfw::Window> $window;
+    public vk::Instance $instance;
+    public vk::SurfaceKHR $surface;
+    public vk::PhysicalDevice $physical;
+    public uint32 $family;
+    public vk::Device $device;
+    public vk::Queue $queue;
+    public vk::SwapchainKHR $swapchain;
+    public uint32 $format;
+    public vk::Extent2D $extent;
+    public array<vk::Image> $images;
+    public array<vk::ImageView> $views;
+    public vk::RenderPass $pass;
+    public array<vk::Framebuffer> $framebuffers;
+    public vk::CommandPool $pool;
+    public vk::CommandBuffer $cmd;
+    public vk::Semaphore $available;
+    public vk::Semaphore $rendered;
+    public vk::Fence $inFlight;
+
+    public constructor()
+    {
+        $this->window:$ = null;
+        $this->instance = vk::Instance::none();
+        $this->surface = vk::SurfaceKHR::none();
+        $this->physical = vk::PhysicalDevice::none();
+        $this->family = 0;
+        $this->device = vk::Device::none();
+        $this->queue = vk::Queue::none();
+        $this->swapchain = vk::SwapchainKHR::none();
+        $this->format = 0;
+        $this->extent = vk::Extent2D();
+        $this->images = array<vk::Image>();
+        $this->views = array<vk::ImageView>();
+        $this->pass = vk::RenderPass::none();
+        $this->framebuffers = array<vk::Framebuffer>();
+        $this->pool = vk::CommandPool::none();
+        $this->cmd = vk::CommandBuffer::none();
+        $this->available = vk::Semaphore::none();
+        $this->rendered = vk::Semaphore::none();
+        $this->inFlight = vk::Fence::none();
+    }
+}
+
+internal function dieVk(vk::Result $r, string $what) : void
+{
+    if (!$r->ok()) {
+        die("{$what}: vk result {$r->value()}");
+    }
+}
+
+internal function roomExts(uint32 $n) : array<vk::ExtensionProperties>
+{
+    array<vk::ExtensionProperties> $exts = arr::room<vk::ExtensionProperties>($n as usize);
+    uint32 $i = 0;
+
+    while ($i < $n) {
+        $exts[] = vk::ExtensionProperties();
+        $i = $i + 1;
+    }
+
+    return $exts;
+}
+
+internal function extensionListed(
+    const array<vk::ExtensionProperties>& $exts,
+    uint32 $n,
+    const string& $wanted
+) : bool
+{
+    uint32 $i = 0;
+
+    while ($i < $n) {
+        ptr<const uint8> $p = &$exts[$i]->extensionName[0];
+        string $nm = str::from($p);
+
+        if ($nm == $wanted) {
+            return true;
+        }
+
+        $i = $i + 1;
+    }
+
+    return false;
+}
+
+internal function instanceHas(const string& $wanted) : bool
+{
+    uint32 $n = 0;
+    vk::Result $r = vk::EnumerateInstanceExtensionProperties(null, &$n, null);
+
+    if ($r != vk::Result::success || $n == 0) {
+        return false;
+    }
+
+    array<vk::ExtensionProperties> $exts = roomExts($n);
+    $r = vk::EnumerateInstanceExtensionProperties(null, &$n, &$exts[0]);
+
+    if ($r != vk::Result::success) {
+        return false;
+    }
+
+    return extensionListed($exts, $n, $wanted);
+}
+
+internal function deviceHas(vk::PhysicalDevice $physical, const string& $wanted) : bool
+{
+    uint32 $n = 0;
+    vk::Result $r = vk::EnumerateDeviceExtensionProperties($physical, null, &$n, null);
+
+    if ($r != vk::Result::success || $n == 0) {
+        return false;
+    }
+
+    array<vk::ExtensionProperties> $exts = roomExts($n);
+    $r = vk::EnumerateDeviceExtensionProperties($physical, null, &$n, &$exts[0]);
+
+    if ($r != vk::Result::success) {
+        return false;
+    }
+
+    return extensionListed($exts, $n, $wanted);
+}
+
+internal function boot(ptr<glfw::Window> $window) : Context
+{
+    Context $g = Context();
+    $g->window:$ = $window:$;
+    $g->family = 0;
+    $g->format = 0;
+
+    createInstance($g);
+    createSurface($g);
+    pickDevice($g);
+    createDevice($g);
+    bootSwapchain($g);
+    createPass($g);
+    createSync($g);
+
+    return $g;
+}
+
+internal function createInstance(Context& $g) : void
+{
+    vk::ApplicationInfo $app = vk::ApplicationInfo();
+    $app->apiVersion = vk::makeApiVersion(0, 1, 0, 0);
+
+    ptr<const uint8>[32] $extBuf;
+    uint32 $extN = 0;
+    uint32 $glfwCount = 0;
+    ptr<ptr<const uint8>> $glfwExts = glfw::getRequiredInstanceExtensions(&$glfwCount);
+    uint32 $gi = 0;
+
+    while ($gi < $glfwCount) {
+        if ($extN >= 32) {
+            die('too many instance extensions');
+        }
+
+        $extBuf[$extN]:$ = $glfwExts:$[$gi];
+        $extN = $extN + 1;
+        $gi = $gi + 1;
+    }
+
+    bool $port = instanceHas(Names::$portability);
+
+    if ($port) {
+        if ($extN >= 32) {
+            die('too many instance extensions');
+        }
+
+        $extBuf[$extN]:$ = Names::$portability->cstr();
+        $extN = $extN + 1;
+    }
+
+    vk::InstanceCreateInfo $ici = vk::InstanceCreateInfo();
+    $ici->pApplicationInfo:$ = &$app;
+    $ici->enabledExtensionCount = $extN;
+
+    if ($extN > 0) {
+        $ici->ppEnabledExtensionNames:$ = &$extBuf[0];
+    }
+
+    if ($port) {
+        $ici->flags = vk::INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+    }
+
+    dieVk(vk::CreateInstance(&$ici, null, &$g->instance), 'CreateInstance');
+    vk::loadInstance($g->instance);
+}
+
+internal function createSurface(Context& $g) : void
+{
+    uint64 $surfaceHandle = 0;
+    dieVk(
+        vk::Result::from(glfw::createWindowSurface($g->instance->handle, $g->window, null, &$surfaceHandle)),
+        'createWindowSurface'
+    );
+    $g->surface = vk::SurfaceKHR($surfaceHandle);
+}
+
+internal function pickDevice(Context& $g) : void
+{
+    uint32 $devCount = 0;
+    dieVk(vk::EnumeratePhysicalDevices($g->instance, &$devCount, null), 'EnumeratePhysicalDevices');
+
+    if ($devCount == 0) {
+        die('no physical devices');
+    }
+
+    array<vk::PhysicalDevice> $devs = arr::room<vk::PhysicalDevice>($devCount as usize);
+    uint32 $di = 0;
+
+    while ($di < $devCount) {
+        $devs[] = vk::PhysicalDevice::none();
+        $di = $di + 1;
+    }
+
+    dieVk(vk::EnumeratePhysicalDevices($g->instance, &$devCount, &$devs[0]), 'EnumeratePhysicalDevices');
+
+    bool $found = false;
+    $di = 0;
+
+    while ($di < $devCount) {
+        uint32 $famCount = 0;
+        vk::GetPhysicalDeviceQueueFamilyProperties($devs[$di], &$famCount, null);
+        array<vk::QueueFamilyProperties> $fams = arr::room<vk::QueueFamilyProperties>($famCount as usize);
+        uint32 $fi = 0;
+
+        while ($fi < $famCount) {
+            $fams[] = vk::QueueFamilyProperties();
+            $fi = $fi + 1;
+        }
+
+        vk::GetPhysicalDeviceQueueFamilyProperties($devs[$di], &$famCount, &$fams[0]);
+        $fi = 0;
+
+        while ($fi < $famCount) {
+            uint32 $present = 0;
+            dieVk(
+                vk::GetPhysicalDeviceSurfaceSupportKHR($devs[$di], $fi, $g->surface, &$present),
+                'GetPhysicalDeviceSurfaceSupportKHR'
+            );
+
+            if (($fams[$fi]->queueFlags & vk::QUEUE_GRAPHICS_BIT) != 0 && $present != 0) {
+                $g->physical = $devs[$di];
+                $g->family = $fi;
+                $found = true;
+                break;
+            }
+
+            $fi = $fi + 1;
+        }
+
+        if ($found) {
+            break;
+        }
+
+        $di = $di + 1;
+    }
+
+    if (!$found) {
+        die('no graphics+present queue');
+    }
+}
+
+internal function createDevice(Context& $g) : void
+{
+    float32 $prio = 1.0f;
+    vk::DeviceQueueCreateInfo $qci = vk::DeviceQueueCreateInfo();
+    $qci->queueFamilyIndex = $g->family;
+    $qci->queueCount = 1;
+    $qci->pQueuePriorities:$ = &$prio;
+
+    ptr<const uint8>[8] $devBuf;
+    uint32 $devN = 0;
+    $devBuf[$devN]:$ = Names::$swapchain->cstr();
+    $devN = $devN + 1;
+
+    if (deviceHas($g->physical, Names::$subset)) {
+        $devBuf[$devN]:$ = Names::$subset->cstr();
+        $devN = $devN + 1;
+    }
+
+    vk::DeviceCreateInfo $dci = vk::DeviceCreateInfo();
+    $dci->queueCreateInfoCount = 1;
+    $dci->pQueueCreateInfos:$ = &$qci;
+    $dci->enabledExtensionCount = $devN;
+    $dci->ppEnabledExtensionNames:$ = &$devBuf[0];
+
+    dieVk(vk::CreateDevice($g->physical, &$dci, null, &$g->device), 'CreateDevice');
+    vk::loadDevice($g->device);
+    vk::GetDeviceQueue($g->device, $g->family, 0, &$g->queue);
+}
+
+internal function bootSwapchain(Context& $g) : void
+{
+    vk::SurfaceCapabilitiesKHR $caps = vk::SurfaceCapabilitiesKHR();
+    dieVk(
+        vk::GetPhysicalDeviceSurfaceCapabilitiesKHR($g->physical, $g->surface, &$caps),
+        'GetPhysicalDeviceSurfaceCapabilitiesKHR'
+    );
+
+    uint32 $fmtCount = 0;
+    dieVk(
+        vk::GetPhysicalDeviceSurfaceFormatsKHR($g->physical, $g->surface, &$fmtCount, null),
+        'GetPhysicalDeviceSurfaceFormatsKHR'
+    );
+
+    if ($fmtCount == 0) {
+        die('no surface formats');
+    }
+
+    array<vk::SurfaceFormatKHR> $fmts = arr::room<vk::SurfaceFormatKHR>($fmtCount as usize);
+    uint32 $i = 0;
+
+    while ($i < $fmtCount) {
+        $fmts[] = vk::SurfaceFormatKHR();
+        $i = $i + 1;
+    }
+
+    dieVk(
+        vk::GetPhysicalDeviceSurfaceFormatsKHR($g->physical, $g->surface, &$fmtCount, &$fmts[0]),
+        'GetPhysicalDeviceSurfaceFormatsKHR'
+    );
+
+    $g->format = $fmts[0]->format;
+    uint32 $colorSpace = $fmts[0]->colorSpace;
+    $i = 0;
+
+    while ($i < $fmtCount) {
+        if ($fmts[$i]->format == vk::FORMAT_B8G8R8A8_UNORM) {
+            $g->format = $fmts[$i]->format;
+            $colorSpace = $fmts[$i]->colorSpace;
+            break;
+        }
+
+        $i = $i + 1;
+    }
+
+    int32 $fbW = 0;
+    int32 $fbH = 0;
+    glfw::getFramebufferSize($g->window, &$fbW, &$fbH);
+
+    if ($caps->currentExtent->width != 0xFFFFFFFF) {
+        $g->extent = $caps->currentExtent;
+    } else {
+        uint32 $w = $fbW as uint32;
+        uint32 $h = $fbH as uint32;
+
+        if ($w < $caps->minImageExtent->width) {
+            $w = $caps->minImageExtent->width;
+        }
+
+        if ($w > $caps->maxImageExtent->width) {
+            $w = $caps->maxImageExtent->width;
+        }
+
+        if ($h < $caps->minImageExtent->height) {
+            $h = $caps->minImageExtent->height;
+        }
+
+        if ($h > $caps->maxImageExtent->height) {
+            $h = $caps->maxImageExtent->height;
+        }
+
+        $g->extent = vk::Extent2D($w, $h);
+    }
+
+    uint32 $n = $caps->minImageCount + 1;
+
+    if ($caps->maxImageCount > 0 && $n > $caps->maxImageCount) {
+        $n = $caps->maxImageCount;
+    }
+
+    uint32 $transform = $caps->currentTransform;
+    uint32 $alpha = vk::COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+
+    if (($caps->supportedCompositeAlpha & $alpha) == 0) {
+        $alpha = 1;
+    }
+
+    vk::SwapchainCreateInfoKHR $sci = vk::SwapchainCreateInfoKHR();
+    $sci->surface = $g->surface;
+    $sci->minImageCount = $n;
+    $sci->imageFormat = $g->format;
+    $sci->imageColorSpace = $colorSpace;
+    $sci->imageExtent = $g->extent;
+    $sci->imageArrayLayers = 1;
+    $sci->imageUsage = vk::IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    $sci->imageSharingMode = vk::SHARING_MODE_EXCLUSIVE;
+    $sci->preTransform = $transform;
+    $sci->compositeAlpha = $alpha;
+    $sci->presentMode = vk::PRESENT_MODE_FIFO_KHR;
+    $sci->clipped = vk::TRUE;
+
+    dieVk(vk::CreateSwapchainKHR($g->device, &$sci, null, &$g->swapchain), 'CreateSwapchainKHR');
+
+    uint32 $imgCount = 0;
+    dieVk(vk::GetSwapchainImagesKHR($g->device, $g->swapchain, &$imgCount, null), 'GetSwapchainImagesKHR');
+    $g->images = arr::room<vk::Image>($imgCount as usize);
+    $i = 0;
+
+    while ($i < $imgCount) {
+        $g->images[] = vk::Image::none();
+        $i = $i + 1;
+    }
+
+    dieVk(vk::GetSwapchainImagesKHR($g->device, $g->swapchain, &$imgCount, &$g->images[0]), 'GetSwapchainImagesKHR');
+}
+
+internal function createPass(Context& $g) : void
+{
+    vk::AttachmentDescription $att = vk::AttachmentDescription();
+    $att->format = $g->format;
+    $att->samples = vk::SAMPLE_COUNT_1_BIT;
+    $att->loadOp = vk::ATTACHMENT_LOAD_OP_CLEAR;
+    $att->storeOp = vk::ATTACHMENT_STORE_OP_STORE;
+    $att->stencilLoadOp = vk::ATTACHMENT_LOAD_OP_DONT_CARE;
+    $att->stencilStoreOp = vk::ATTACHMENT_STORE_OP_DONT_CARE;
+    $att->initialLayout = vk::IMAGE_LAYOUT_UNDEFINED;
+    $att->finalLayout = vk::IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    vk::AttachmentReference $colorRef = vk::AttachmentReference();
+    $colorRef->attachment = 0;
+    $colorRef->layout = vk::IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    vk::SubpassDescription $sub = vk::SubpassDescription();
+    $sub->pipelineBindPoint = vk::PIPELINE_BIND_POINT_GRAPHICS;
+    $sub->colorAttachmentCount = 1;
+    $sub->pColorAttachments:$ = &$colorRef;
+
+    vk::SubpassDependency $dep = vk::SubpassDependency();
+    $dep->srcSubpass = vk::SUBPASS_EXTERNAL;
+    $dep->dstSubpass = 0;
+    $dep->srcStageMask = vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    $dep->dstStageMask = vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    $dep->srcAccessMask = 0;
+    $dep->dstAccessMask = vk::ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    vk::RenderPassCreateInfo $rpci = vk::RenderPassCreateInfo();
+    $rpci->attachmentCount = 1;
+    $rpci->pAttachments:$ = &$att;
+    $rpci->subpassCount = 1;
+    $rpci->pSubpasses:$ = &$sub;
+    $rpci->dependencyCount = 1;
+    $rpci->pDependencies:$ = &$dep;
+    dieVk(vk::CreateRenderPass($g->device, &$rpci, null, &$g->pass), 'CreateRenderPass');
+
+    uint32 $imgCount = $g->images->count() as uint32;
+    $g->views = arr::room<vk::ImageView>($imgCount as usize);
+    $g->framebuffers = arr::room<vk::Framebuffer>($imgCount as usize);
+    uint32 $i = 0;
+
+    while ($i < $imgCount) {
+        vk::ImageViewCreateInfo $ivci = vk::ImageViewCreateInfo();
+        $ivci->image = $g->images[$i];
+        $ivci->viewType = vk::IMAGE_VIEW_TYPE_2D;
+        $ivci->format = $g->format;
+        $ivci->subresourceRange->aspectMask = vk::IMAGE_ASPECT_COLOR_BIT;
+        $ivci->subresourceRange->levelCount = 1;
+        $ivci->subresourceRange->layerCount = 1;
+
+        vk::ImageView $view = vk::ImageView::none();
+        dieVk(vk::CreateImageView($g->device, &$ivci, null, &$view), 'CreateImageView');
+        $g->views[] = $view;
+
+        vk::FramebufferCreateInfo $fbci = vk::FramebufferCreateInfo();
+        $fbci->renderPass = $g->pass;
+        $fbci->attachmentCount = 1;
+        $fbci->pAttachments:$ = &$view;
+        $fbci->width = $g->extent->width;
+        $fbci->height = $g->extent->height;
+        $fbci->layers = 1;
+
+        vk::Framebuffer $fb = vk::Framebuffer::none();
+        dieVk(vk::CreateFramebuffer($g->device, &$fbci, null, &$fb), 'CreateFramebuffer');
+        $g->framebuffers[] = $fb;
+        $i = $i + 1;
+    }
+}
+
+internal function createSync(Context& $g) : void
+{
+    vk::CommandPoolCreateInfo $pci = vk::CommandPoolCreateInfo();
+    $pci->flags = vk::COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    $pci->queueFamilyIndex = $g->family;
+    dieVk(vk::CreateCommandPool($g->device, &$pci, null, &$g->pool), 'CreateCommandPool');
+
+    vk::CommandBufferAllocateInfo $ai = vk::CommandBufferAllocateInfo();
+    $ai->commandPool = $g->pool;
+    $ai->level = vk::COMMAND_BUFFER_LEVEL_PRIMARY;
+    $ai->commandBufferCount = 1;
+    dieVk(vk::AllocateCommandBuffers($g->device, &$ai, &$g->cmd), 'AllocateCommandBuffers');
+
+    vk::SemaphoreCreateInfo $sci = vk::SemaphoreCreateInfo();
+    dieVk(vk::CreateSemaphore($g->device, &$sci, null, &$g->available), 'CreateSemaphore');
+    dieVk(vk::CreateSemaphore($g->device, &$sci, null, &$g->rendered), 'CreateSemaphore');
+
+    vk::FenceCreateInfo $fci = vk::FenceCreateInfo();
+    $fci->flags = vk::FENCE_CREATE_SIGNALED_BIT;
+    dieVk(vk::CreateFence($g->device, &$fci, null, &$g->inFlight), 'CreateFence');
+}
+
+internal function acquire(Context& $g) : uint32
+{
+    dieVk(vk::WaitForFences($g->device, 1, &$g->inFlight, vk::TRUE, vk::WHOLE_SIZE), 'WaitForFences');
+    dieVk(vk::ResetFences($g->device, 1, &$g->inFlight), 'ResetFences');
+
+    uint32 $index = 0;
+    dieVk(
+        vk::AcquireNextImageKHR($g->device, $g->swapchain, vk::WHOLE_SIZE, $g->available, vk::Fence::none(), &$index),
+        'AcquireNextImageKHR'
+    );
+
+    return $index;
+}
+
+internal function submit(Context& $g, uint32 $index) : void
+{
+    uint32 $waitStage = vk::PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    vk::SubmitInfo $si = vk::SubmitInfo();
+    $si->waitSemaphoreCount = 1;
+    $si->pWaitSemaphores:$ = &$g->available;
+    $si->pWaitDstStageMask:$ = &$waitStage;
+    $si->commandBufferCount = 1;
+    $si->pCommandBuffers:$ = &$g->cmd;
+    $si->signalSemaphoreCount = 1;
+    $si->pSignalSemaphores:$ = &$g->rendered;
+    dieVk(vk::QueueSubmit($g->queue, 1, &$si, $g->inFlight), 'QueueSubmit');
+
+    vk::PresentInfoKHR $pi = vk::PresentInfoKHR();
+    $pi->waitSemaphoreCount = 1;
+    $pi->pWaitSemaphores:$ = &$g->rendered;
+    $pi->swapchainCount = 1;
+    $pi->pSwapchains:$ = &$g->swapchain;
+    $pi->pImageIndices:$ = &$index;
+    vk::Result $pr = vk::QueuePresentKHR($g->queue, &$pi);
+
+    if (!$pr->ok() && $pr != vk::Result::errorOutOfDateKhr) {
+        dieVk($pr, 'QueuePresentKHR');
+    }
+}
+
+internal function shutdown(Context& $g) : void
+{
+    vk::DeviceWaitIdle($g->device);
+
+    usize $i = 0;
+
+    while ($i < $g->framebuffers->count()) {
+        vk::DestroyFramebuffer($g->device, $g->framebuffers[$i], null);
+        $i = $i + 1;
+    }
+
+    $i = 0;
+
+    while ($i < $g->views->count()) {
+        vk::DestroyImageView($g->device, $g->views[$i], null);
+        $i = $i + 1;
+    }
+
+    vk::DestroyRenderPass($g->device, $g->pass, null);
+    vk::DestroySwapchainKHR($g->device, $g->swapchain, null);
+    vk::DestroySemaphore($g->device, $g->available, null);
+    vk::DestroySemaphore($g->device, $g->rendered, null);
+    vk::DestroyFence($g->device, $g->inFlight, null);
+    vk::DestroyCommandPool($g->device, $g->pool, null);
+    vk::DestroyDevice($g->device, null);
+    vk::DestroySurfaceKHR($g->instance, $g->surface, null);
+    vk::DestroyInstance($g->instance, null);
+}

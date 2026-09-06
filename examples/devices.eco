@@ -1,0 +1,75 @@
+/*
+ * List Vulkan physical devices. No window.
+ *
+ *   echoc run --target devices
+ */
+
+if (!vk::available()) {
+    die('no Vulkan ICD (on macOS: brew install molten-vk, or a Vulkan SDK)');
+}
+
+usize $loaded = vk::loadDefault();
+
+if ($loaded == 0) {
+    die('vk::loadDefault resolved nothing');
+}
+
+vk::ApplicationInfo $app = vk::ApplicationInfo();
+$app->apiVersion = vk::makeApiVersion(0, 1, 0, 0);
+
+bool $wantPortability = instanceHas(Names::$portability);
+ptr<const uint8> $ext0 = Names::$portability->cstr();
+
+vk::InstanceCreateInfo $info = vk::InstanceCreateInfo();
+$info->pApplicationInfo:$ = &$app;
+
+if ($wantPortability) {
+    $info->flags = vk::INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+    $info->enabledExtensionCount = 1;
+    $info->ppEnabledExtensionNames:$ = &$ext0;
+}
+
+vk::Instance $instance = vk::Instance::none();
+vk::Result $r = vk::CreateInstance(&$info, null, &$instance);
+vk::Result $created = guard vk::check($r) else ($e) {
+    die($e->message());
+}
+
+vk::loadInstance($instance);
+
+uint32 $count = 0;
+$r = vk::EnumeratePhysicalDevices($instance, &$count, null);
+vk::Result $counted = guard vk::check($r) else ($e) {
+    die($e->message());
+}
+
+if ($count == 0) {
+    die('no physical devices');
+}
+
+array<vk::PhysicalDevice> $devs = arr::room<vk::PhysicalDevice>($count as usize);
+uint32 $i = 0;
+
+while ($i < $count) {
+    $devs[] = vk::PhysicalDevice::none();
+    $i = $i + 1;
+}
+
+$r = vk::EnumeratePhysicalDevices($instance, &$count, &$devs[0]);
+vk::Result $listed = guard vk::check($r) else ($e) {
+    die($e->message());
+}
+
+std::io::println("physical devices: {$count}");
+$i = 0;
+
+while ($i < $count) {
+    vk::PhysicalDeviceProperties $props = vk::PhysicalDeviceProperties();
+    vk::GetPhysicalDeviceProperties($devs[$i], &$props);
+    ptr<uint8> $name = &$props->deviceName[0];
+    string $s = str::from(ptr<const uint8>($name:$));
+    std::io::println("  {$s}");
+    $i = $i + 1;
+}
+
+vk::DestroyInstance($instance, null);

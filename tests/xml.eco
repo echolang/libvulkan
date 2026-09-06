@@ -1,0 +1,119 @@
+/**
+ * cursor: comments, entities, child walk
+ */
+
+test xml_skips_pi_and_comment
+{
+    $c = vkgen::xml::Cursor('<?xml version="1.0"?><!-- hi --><enum name="VK_SUCCESS"/>');
+    $t = guard $c->nextTag() else {
+        die('expected a tag');
+    }
+
+    assert($t->name == 'enum');
+    assert($t->attr('name') == 'VK_SUCCESS');
+}
+
+test xml_reads_closing_tag
+{
+    $c = vkgen::xml::Cursor('</registry>');
+    $t = guard $c->nextTag() else {
+        die('expected a tag');
+    }
+
+    assert($t->name == 'registry');
+    assert($t->closing);
+    assert(!$t->selfClosing);
+}
+
+test xml_decodes_attr_entities
+{
+    $c = vkgen::xml::Cursor('<enum name="A&amp;B" value="&quot;x&quot;"/>');
+    $t = guard $c->nextTag() else {
+        die('expected a tag');
+    }
+
+    assert($t->attr('name') == 'A&B');
+    assert($t->attr('value') == '"x"');
+}
+
+test xml_decode_five_entities_and_unknown
+{
+    assert(vkgen::xml::decode('a&amp;b&lt;c&gt;d&quot;e&apos;f') == 'a&b<c>d"e\'f');
+    assert(vkgen::xml::decode('keep &foo; intact') == 'keep &foo; intact');
+    assert(vkgen::xml::decode('no entities') == 'no entities');
+}
+
+test xml_next_open_walks_children
+{
+    $c = vkgen::xml::Cursor('<root><a/><b></b></root>');
+    $root = guard $c->nextTag() else {
+        die('root');
+    }
+    assert($root->name == 'root');
+
+    $a = guard $c->nextOpen('root') else ($e) {
+        die($e->message());
+    }
+    $aTag = guard $a else {
+        die('expected a');
+    }
+    assert($aTag->name == 'a');
+    assert($aTag->selfClosing);
+
+    $b = guard $c->nextOpen('root') else ($e) {
+        die($e->message());
+    }
+    $bTag = guard $b else {
+        die('expected b');
+    }
+    assert($bTag->name == 'b');
+
+    $end = guard $c->nextOpen('root') else ($e) {
+        die($e->message());
+    }
+    assert($end == null);
+}
+
+test xml_next_named_skips_others
+{
+    $c = vkgen::xml::Cursor('<root><skip>x</skip><keep name="k"/><skip2/></root>');
+    $root = guard $c->nextTag() else {
+        die('root');
+    }
+    assert($root->name == 'root');
+
+    $keep = guard $c->nextNamed('root', 'keep') else ($e) {
+        die($e->message());
+    }
+    $tag = guard $keep else {
+        die('expected keep');
+    }
+    assert($tag->name == 'keep');
+    assert($tag->attr('name') == 'k');
+}
+
+test xml_next_open_unterminated
+{
+    $c = vkgen::xml::Cursor('<root><a/>');
+    $root = guard $c->nextTag() else {
+        die('root');
+    }
+    assert($root->name == 'root');
+    $a = guard $c->nextOpen('root') else ($e) {
+        die($e->message());
+    }
+    assert($a != null);
+
+    $r = $c->nextOpen('root');
+    assert($r->failed());
+}
+
+test xml_take_text_decodes
+{
+    $c = vkgen::xml::Cursor('<n>A&amp;B</n>');
+    $open = guard $c->nextTag() else {
+        die('open');
+    }
+    assert($open->name == 'n');
+    assert($c->takeText() == 'A&B');
+}

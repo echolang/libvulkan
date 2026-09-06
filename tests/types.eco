@@ -1,0 +1,133 @@
+/**
+ * C declarators and Khronos integer literals
+ */
+
+test declarator_struct_pointer
+{
+    $d = guard vkgen::types::parse('struct VkFoo *') else ($e) {
+        die($e->message());
+    }
+
+    assert($d->base == 'VkFoo');
+    assert($d->stars == 1);
+    assert(!$d->baseConst);
+}
+
+test declarator_const_after_ident_is_base_const
+{
+    $d = guard vkgen::types::parse('char const *') else ($e) {
+        die($e->message());
+    }
+
+    assert($d->base == 'char');
+    assert($d->baseConst);
+    assert($d->stars == 1);
+}
+
+test declarator_empty_brackets_are_a_star
+{
+    $d = guard vkgen::types::parse('int []') else ($e) {
+        die($e->message());
+    }
+
+    assert($d->base == 'int');
+    assert($d->stars == 1);
+    assert($d->arrayN == 0);
+}
+
+test declarator_array_enum_name
+{
+    $d = guard vkgen::types::parse('char [VK_MAX_EXTENSION_NAME_SIZE]') else ($e) {
+        die($e->message());
+    }
+
+    assert($d->base == 'char');
+    assert($d->arrayEnum == 'VK_MAX_EXTENSION_NAME_SIZE');
+    assert($d->arrayN == 0);
+}
+
+test declarator_unterminated_array
+{
+    $r = vkgen::types::parse('uint8_t [16');
+    assert($r->failed());
+}
+
+test declarator_missing_type_name
+{
+    $r = vkgen::types::parse('const *');
+    assert($r->failed());
+}
+
+test declarator_missing_struct_name
+{
+    $r = vkgen::types::parse('struct *');
+    assert($r->failed());
+}
+
+test parse_enum_tilde_family
+{
+    uint64 $n1 = guard vkgen::types::parseEnum('(~1U)') else ($e) {
+        die($e->message());
+    }
+    assert($n1 == 0xFFFFFFFE);
+
+    uint64 $n2 = guard vkgen::types::parseEnum('~2U') else ($e) {
+        die($e->message());
+    }
+    assert($n2 == 0xFFFFFFFD);
+
+    uint64 $ull = guard vkgen::types::parseEnum('(~0ULL)') else ($e) {
+        die($e->message());
+    }
+    assert($ull == 0xFFFFFFFFFFFFFFFF);
+
+    uint64 $hex = guard vkgen::types::parseEnum('0x10') else ($e) {
+        die($e->message());
+    }
+    assert($hex == 16);
+}
+
+test parse_enum_empty_and_garbage
+{
+    assert(vkgen::types::parseEnum('')->failed());
+    assert(vkgen::types::parseEnum('nope')->failed());
+}
+
+test parse_bitpos_range
+{
+    uint64 $ok = guard vkgen::types::parseBitpos('31') else ($e) {
+        die($e->message());
+    }
+    assert($ok == 0x80000000);
+
+    assert(vkgen::types::parseBitpos('-1')->failed());
+    assert(vkgen::types::parseBitpos('64')->failed());
+}
+
+test parse_offset_negative_vkresult
+{
+    uint64 $pos = guard vkgen::types::parseOffset(1, 0, false) else ($e) {
+        die($e->message());
+    }
+    assert($pos == 1000000000);
+
+    uint64 $neg = guard vkgen::types::parseOffset(1, 0, true) else ($e) {
+        die($e->message());
+    }
+    assert($neg == 0x100000000 - 1000000000);
+
+    assert(vkgen::types::parseOffset(0, 0, false)->failed());
+}
+
+test scalar_c_table
+{
+    assert(vkgen::types::scalarC('void') == '');
+    assert(vkgen::types::scalarC('char') == 'uint8');
+    assert(vkgen::types::scalarC('uint32_t') == 'uint32');
+    assert(vkgen::types::scalarC('VkFlags') == 'uint32');
+    assert(vkgen::types::scalarC('VkDeviceSize') == 'uint64');
+    assert(vkgen::types::scalarC('size_t') == 'usize');
+    assert(vkgen::types::scalarC('float') == 'float32');
+    assert(vkgen::types::scalarC('VkResult') == 'int32');
+    assert(vkgen::types::scalarC('VkInstance') == '');
+}

@@ -1,0 +1,175 @@
+/*
+ * A triangle. GLFW window, no OpenGL, one Vulkan pipeline.
+ *
+ *   echoc run --target triangle -- --frames 120
+ */
+
+int32 $frames = guard parseFrames(std::env::argv()) else ($e) {
+    die($e);
+}
+
+if (!vk::available()) {
+    die('no Vulkan ICD (on macOS: brew install molten-vk, or a Vulkan SDK)');
+}
+
+if (vk::loadDefault() == 0) {
+    die('vk::loadDefault resolved nothing');
+}
+
+glfw::initVulkanLoader(vk::getInstanceProcAddrPtr());
+
+if (glfw::init() != glfw::TRUE) {
+    die(glfw::error_message());
+}
+
+glfw::windowHint(glfw::CLIENT_API, glfw::NO_API);
+
+ptr<glfw::Window> $window = glfw::createWindow(800, 600, 'libvulkan triangle', null, null);
+
+if ($window:$ == null) {
+    glfw::terminate();
+    die(glfw::error_message());
+}
+
+Context $g = boot($window);
+
+vk::ShaderModule $vs = loadSpv($g->device, 'triangle.vert.spv');
+vk::ShaderModule $fs = loadSpv($g->device, 'triangle.frag.spv');
+
+string $entry = 'main';
+vk::PipelineShaderStageCreateInfo $vsStage = vk::PipelineShaderStageCreateInfo();
+$vsStage->stage = vk::SHADER_STAGE_VERTEX_BIT;
+$vsStage->module = $vs;
+$vsStage->pName:$ = $entry->cstr();
+
+vk::PipelineShaderStageCreateInfo $fsStage = vk::PipelineShaderStageCreateInfo();
+$fsStage->stage = vk::SHADER_STAGE_FRAGMENT_BIT;
+$fsStage->module = $fs;
+$fsStage->pName:$ = $entry->cstr();
+
+vk::PipelineShaderStageCreateInfo[2] $stages;
+$stages[0] = $vsStage;
+$stages[1] = $fsStage;
+
+vk::PipelineVertexInputStateCreateInfo $vertex = vk::PipelineVertexInputStateCreateInfo();
+vk::PipelineInputAssemblyStateCreateInfo $ia = vk::PipelineInputAssemblyStateCreateInfo();
+$ia->topology = vk::PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+vk::Viewport $vp = vk::Viewport();
+$vp->x = 0.0f;
+$vp->y = 0.0f;
+$vp->width = $g->extent->width as float32;
+$vp->height = $g->extent->height as float32;
+$vp->minDepth = 0.0f;
+$vp->maxDepth = 1.0f;
+
+vk::Rect2D $scissor = vk::Rect2D();
+$scissor->offset = vk::Offset2D(0, 0);
+$scissor->extent = $g->extent;
+
+vk::PipelineViewportStateCreateInfo $viewport = vk::PipelineViewportStateCreateInfo();
+$viewport->viewportCount = 1;
+$viewport->pViewports:$ = &$vp;
+$viewport->scissorCount = 1;
+$viewport->pScissors:$ = &$scissor;
+
+vk::PipelineRasterizationStateCreateInfo $raster = vk::PipelineRasterizationStateCreateInfo();
+$raster->polygonMode = vk::POLYGON_MODE_FILL;
+$raster->cullMode = vk::CULL_MODE_NONE;
+$raster->frontFace = vk::FRONT_FACE_COUNTER_CLOCKWISE;
+$raster->lineWidth = 1.0f;
+
+vk::PipelineMultisampleStateCreateInfo $ms = vk::PipelineMultisampleStateCreateInfo();
+$ms->rasterizationSamples = vk::SAMPLE_COUNT_1_BIT;
+
+vk::PipelineColorBlendAttachmentState $blendAtt = vk::PipelineColorBlendAttachmentState();
+$blendAtt->colorWriteMask = vk::COLOR_COMPONENT_R_BIT | vk::COLOR_COMPONENT_G_BIT | vk::COLOR_COMPONENT_B_BIT | vk::COLOR_COMPONENT_A_BIT;
+
+vk::PipelineColorBlendStateCreateInfo $blend = vk::PipelineColorBlendStateCreateInfo();
+$blend->attachmentCount = 1;
+$blend->pAttachments:$ = &$blendAtt;
+
+vk::PipelineLayoutCreateInfo $plci = vk::PipelineLayoutCreateInfo();
+vk::PipelineLayout $layout = vk::PipelineLayout::none();
+dieVk(vk::CreatePipelineLayout($g->device, &$plci, null, &$layout), 'CreatePipelineLayout');
+
+vk::GraphicsPipelineCreateInfo $gpci = vk::GraphicsPipelineCreateInfo();
+$gpci->stageCount = 2;
+$gpci->pStages:$ = &$stages[0];
+$gpci->pVertexInputState:$ = &$vertex;
+$gpci->pInputAssemblyState:$ = &$ia;
+$gpci->pViewportState:$ = &$viewport;
+$gpci->pRasterizationState:$ = &$raster;
+$gpci->pMultisampleState:$ = &$ms;
+$gpci->pColorBlendState:$ = &$blend;
+$gpci->layout = $layout;
+$gpci->renderPass = $g->pass;
+$gpci->subpass = 0;
+
+vk::Pipeline $pipeline = vk::Pipeline::none();
+dieVk(
+    vk::CreateGraphicsPipelines($g->device, vk::PipelineCache::none(), 1, &$gpci, null, &$pipeline),
+    'CreateGraphicsPipelines'
+);
+
+vk::ClearValue $clear = vk::ClearValue();
+$clear->color->float32[0] = 0.08f;
+$clear->color->float32[1] = 0.08f;
+$clear->color->float32[2] = 0.1f;
+$clear->color->float32[3] = 1.0f;
+
+int32 $frame = 0;
+
+while ($frame < $frames && glfw::windowShouldClose($window) == glfw::FALSE) {
+    uint32 $index = acquire($g);
+    dieVk(vk::ResetCommandBuffer($g->cmd, 0), 'ResetCommandBuffer');
+
+    vk::CommandBufferBeginInfo $begin = vk::CommandBufferBeginInfo();
+    $begin->flags = vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    dieVk(vk::BeginCommandBuffer($g->cmd, &$begin), 'BeginCommandBuffer');
+
+    vk::RenderPassBeginInfo $rp = vk::RenderPassBeginInfo();
+    $rp->renderPass = $g->pass;
+    $rp->framebuffer = $g->framebuffers[$index];
+    $rp->renderArea->offset = vk::Offset2D(0, 0);
+    $rp->renderArea->extent = $g->extent;
+    $rp->clearValueCount = 1;
+    $rp->pClearValues:$ = &$clear;
+    vk::CmdBeginRenderPass($g->cmd, &$rp, vk::SUBPASS_CONTENTS_INLINE);
+    vk::CmdBindPipeline($g->cmd, vk::PIPELINE_BIND_POINT_GRAPHICS, $pipeline);
+    vk::CmdDraw($g->cmd, 3, 1, 0, 0);
+    vk::CmdEndRenderPass($g->cmd);
+    dieVk(vk::EndCommandBuffer($g->cmd), 'EndCommandBuffer');
+
+    submit($g, $index);
+    glfw::pollEvents();
+    $frame = $frame + 1;
+}
+
+vk::DestroyPipeline($g->device, $pipeline, null);
+vk::DestroyPipelineLayout($g->device, $layout, null);
+vk::DestroyShaderModule($g->device, $vs, null);
+vk::DestroyShaderModule($g->device, $fs, null);
+shutdown($g);
+glfw::destroyWindow($window);
+glfw::terminate();
+
+internal function loadSpv(vk::Device $device, const string& $path) : vk::ShaderModule
+{
+    string $bytes = guard std::io::readfile($path) else ($e) {
+        die($e->message());
+    }
+
+    if ($bytes->size() % 4 != 0) {
+        die('spir-v is not a multiple of 4 bytes');
+    }
+
+    vk::ShaderModuleCreateInfo $ci = vk::ShaderModuleCreateInfo();
+    $ci->codeSize = $bytes->size();
+    $ci->pCode:$ = ptr<const uint32>($bytes->data());
+
+    vk::ShaderModule $m = vk::ShaderModule::none();
+    dieVk(vk::CreateShaderModule($device, &$ci, null, &$m), 'CreateShaderModule');
+
+    return $m;
+}

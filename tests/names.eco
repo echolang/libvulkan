@@ -1,0 +1,116 @@
+/**
+ * prefix strip and parameter renaming
+ */
+
+test strip_leading_digit_gets_underscore
+{
+    $n = guard vkgen::feat::stripConst('VK_3D') else ($e) {
+        die($e->message());
+    }
+
+    assert($n == '_3D');
+}
+
+test strip_empty_after_prefix_fails
+{
+    assert(vkgen::feat::stripType('Vk')->failed());
+    assert(vkgen::feat::stripConst('VK_')->failed());
+    assert(vkgen::feat::stripFn('vk')->failed());
+}
+
+test strip_leaves_unprefixed_names
+{
+    $t = guard vkgen::feat::stripType('Extent2D') else ($e) {
+        die($e->message());
+    }
+    $c = guard vkgen::feat::stripConst('SUCCESS') else ($e) {
+        die($e->message());
+    }
+    $f = guard vkgen::feat::stripFn('CreateInstance') else ($e) {
+        die($e->message());
+    }
+
+    assert($t == 'Extent2D');
+    assert($c == 'SUCCESS');
+    assert($f == 'CreateInstance');
+}
+
+test enum_case_scream_to_camel
+{
+    $s = guard vkgen::feat::enumCase('VK_SUCCESS') else ($e) {
+        die($e->message());
+    }
+    $err = guard vkgen::feat::enumCase('VK_ERROR_OUT_OF_HOST_MEMORY') else ($e) {
+        die($e->message());
+    }
+    $khr = guard vkgen::feat::enumCase('VK_ERROR_SURFACE_LOST_KHR') else ($e) {
+        die($e->message());
+    }
+
+    assert($s == 'success');
+    assert($err == 'errorOutOfHostMemory');
+    assert($khr == 'errorSurfaceLostKhr');
+}
+
+test param_name_rewrites_keywords
+{
+    assert(vkgen::feat::paramName('constructor', 0) == 'p0');
+    assert(vkgen::feat::paramName('destructor', 1) == 'p1');
+    assert(vkgen::feat::paramName('init', 2) == 'p2');
+    assert(vkgen::feat::paramName('function', 4) == 'p4');
+    assert(vkgen::feat::paramName('match', 5) == 'p5');
+    assert(vkgen::feat::paramName('guard', 6) == 'p6');
+    assert(vkgen::feat::paramName('return', 7) == 'p7');
+    assert(vkgen::feat::paramName('width', 0) == 'width');
+}
+
+test less_bytes_orders_names
+{
+    assert(vkgen::feat::lessBytes('CreateInstance', 'DestroyInstance'));
+    assert(!vkgen::feat::lessBytes('DestroyInstance', 'CreateInstance'));
+    assert(vkgen::feat::lessBytes('ab', 'abc'));
+    assert(!vkgen::feat::lessBytes('abc', 'ab'));
+}
+
+test parse_version
+{
+    int32 $maj = 0;
+    int32 $min = 0;
+    $ok = guard vkgen::reg::parseVersion('1.3', $maj, $min) else ($e) {
+        die($e->message());
+    }
+    assert($maj == 1);
+    assert($min == 3);
+
+    int32 $a = 0;
+    int32 $b = 0;
+    assert(vkgen::reg::parseVersion('1', $a, $b)->failed());
+    assert(vkgen::reg::parseVersion('x.y', $a, $b)->failed());
+}
+
+test api_allows_empty_and_list
+{
+    assert(vkgen::reg::apiAllows('', 'vulkan'));
+    assert(vkgen::reg::apiAllows('vulkan', 'vulkan'));
+    assert(vkgen::reg::apiAllows('vulkan,vulkansc', 'vulkansc'));
+    assert(!vkgen::reg::apiAllows('vulkansc', 'vulkan'));
+}
+
+test error_messages
+{
+    vkgen::Error $ext = vkgen::Error::unknownExtension('VK_FOO');
+    string $extMsg = $ext->message();
+    assert($extMsg == "unknown extension 'VK_FOO'");
+
+    vkgen::Error $empty = vkgen::Error::emptyRegistry;
+    string $emptyMsg = $empty->message();
+    assert($emptyMsg == 'registry XML is empty');
+
+    vk::Error $icd = vk::Error::noIcd;
+    string $icdMsg = $icd->message();
+    assert($icdMsg == 'vk: no ICD');
+
+    vk::Error $vk = vk::Error::vulkan(-4);
+    string $vkMsg = $vk->message();
+    assert($vkMsg == 'vk result -4');
+}

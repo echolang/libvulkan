@@ -1,0 +1,114 @@
+/**
+ * Generator internals: scanner, declarators, offset/bitpos, a toy fold.
+ * No ICD, no committed vk.eco.
+ */
+
+test scanner_reads_attrs_and_self_closing
+{
+    $c = vkgen::xml::Cursor('<enum value="0" name="VK_SUCCESS"/>');
+    $t = guard $c->nextTag() else {
+        die('expected a tag');
+    }
+
+    assert($t->name == 'enum');
+    assert($t->selfClosing);
+    assert(!$t->closing);
+    assert($t->attr('value') == '0');
+    assert($t->attr('name') == 'VK_SUCCESS');
+}
+
+test naming_strips_prefixes
+{
+    $c = guard vkgen::feat::stripConst('VK_SUCCESS') else ($e) {
+        die($e->message());
+    }
+    $f = guard vkgen::feat::stripFn('vkCreateInstance') else ($e) {
+        die($e->message());
+    }
+    $t = guard vkgen::feat::stripType('VkInstance') else ($e) {
+        die($e->message());
+    }
+
+    assert($c == 'SUCCESS');
+    assert($f == 'CreateInstance');
+    assert($t == 'Instance');
+    assert(vkgen::feat::paramName('this', 3) == 'p3');
+    assert(vkgen::feat::paramName('pCreateInfo', 0) == 'pCreateInfo');
+}
+
+test parse_enum_twos_complement_and_tilde
+{
+    uint64 $neg = guard vkgen::types::parseEnum('-1') else ($e) {
+        die($e->message());
+    }
+
+    assert($neg == 0xFFFFFFFF);
+
+    uint64 $all = guard vkgen::types::parseEnum('(~0U)') else ($e) {
+        die($e->message());
+    }
+
+    assert($all == 0xFFFFFFFF);
+
+    uint64 $bit = guard vkgen::types::parseBitpos('0') else ($e) {
+        die($e->message());
+    }
+
+    assert($bit == 1);
+
+    uint64 $bit2 = guard vkgen::types::parseBitpos('2') else ($e) {
+        die($e->message());
+    }
+
+    assert($bit2 == 4);
+
+    uint64 $off = guard vkgen::types::parseOffset(218, 0, false) else ($e) {
+        die($e->message());
+    }
+
+    assert($off == 1000217000);
+}
+
+test declarator_const_char_star
+{
+    $d = guard vkgen::types::parse('const char *') else ($e) {
+        die($e->message());
+    }
+
+    assert($d->base == 'char');
+    assert($d->baseConst);
+    assert($d->stars == 1);
+}
+
+test declarator_fixed_array_suffix
+{
+    $d = guard vkgen::types::parse('uint8_t [16]') else ($e) {
+        die($e->message());
+    }
+
+    assert($d->base == 'uint8_t');
+    assert($d->arrayN == 16);
+    assert($d->stars == 0);
+}
+
+test make_api_version
+{
+    assert(vk::makeApiVersion(0, 1, 3, 0) == ((1 as uint32) << 22) | ((3 as uint32) << 12));
+}
+
+test check_keeps_status_and_rejects_errors
+{
+    vk::Result $ok = guard vk::check(vk::Result::success) else {
+        die('SUCCESS is not an error');
+    }
+    assert($ok == vk::Result::success);
+
+    vk::Result $sub = guard vk::check(vk::Result::timeout) else {
+        die('TIMEOUT is not an error');
+    }
+    assert($sub == vk::Result::timeout);
+
+    $bad = vk::check(vk::Result::from(-1));
+    assert($bad->failed());
+    assert($bad->failure()->message() == 'vk result -1');
+}

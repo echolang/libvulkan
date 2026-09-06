@@ -1,0 +1,29 @@
+/*
+ * libvulkan - Vulkan bindings for Echo.
+ *
+ * Generated from the Khronos registry. Nothing here is linked: every entry
+ * point is an address `vk::load` asks a getproc for, so the same module
+ * works on Darwin (MoltenVK), Linux and Windows. A consumer adds it with
+ * epm and nothing else.
+ */
+
+#[module: "libvulkan"]
+#[version: "0.1.0"] // x-release-please-version
+#[epm::license: "MIT"]
+#[epm::description: "Vulkan bindings generated from the Khronos registry"]
+
+#[sources: "src/*.eco"]
+#[cc: sources "c/load.c"]
+
+#[if: os == linux]
+#[link: lib { name: "dl", runtime: process }]
+#[end]
+
+#[target: exe { name: "generate", entry: "gen/main.eco" }] {
+    #[sources: "gen/*.eco"]
+}
+
+#[target: test] {
+    #[sources: "tests/*.eco"]
+    #[sources: "gen/*.eco"]
+}

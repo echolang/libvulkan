@@ -1,0 +1,717 @@
+/**
+ * xml walk that fills a Registry
+ */
+
+namespace vkgen::reg;
+
+use vkgen::xml;
+use vkgen::types;
+use vkgen::Error;
+
+private enum MixedStage
+{
+    case prefix;
+    case mid;
+    case suffix;
+}
+
+internal function parseTypes(xml::Cursor& $c, const xml::Tag& $open, Registry& $reg) : result<bool, Error>
+{
+    if ($open->selfClosing) {
+        return .ok(true);
+    }
+
+    while (true) {
+        $maybe = guard $c->nextNamed('types', 'type') else ($e) {
+            return .error($e);
+        }
+
+        $t = guard $maybe else {
+            return .ok(true);
+        }
+
+        $td = guard parseType($c, $t) else ($e) {
+            return .error($e);
+        }
+
+        if ($td->name->empty()) {
+            continue;
+        }
+
+        if (!$reg->types->has($td->name)) {
+            $reg->types[$td->name] = $td;
+        }
+    }
+}
+
+private function parseType(xml::Cursor& $c, const xml::Tag& $open) : result<TypeDef, Error>
+{
+    $td = TypeDef();
+    $td->name = $open->attr('name');
+    $td->alias = $open->attr('alias');
+    $cat = $open->attr('category');
+
+    if (!$td->alias->empty()) {
+        $td->kind = TypeKind::alias;
+
+        if (!$open->selfClosing) {
+            if (!$c->skipPastClose('type')) {
+                return .error(.unterminated('<type> alias'));
+            }
+        }
+
+        return .ok($td);
+    }
+
+    if ($cat == 'struct') {
+        $td->kind = TypeKind::structure;
+
+        return parseMembers($c, $open, $td);
+    }
+
+    if ($cat == 'union') {
+        $td->kind = TypeKind::union;
+
+        return parseMembers($c, $open, $td);
+    }
+
+    if ($cat == 'handle') {
+        $td->kind = TypeKind::handle;
+        $p = guard collectMixed($c, $open, 'type') else ($e) {
+            return .error($e);
+        }
+
+        if ($td->name->empty()) {
+            $td->name = str::trim($p->name);
+        }
+
+        string $blob = $p->prefix;
+        $blob->append($p->ptype);
+        $blob->append($p->mid);
+
+        if ($blob->find('NON_DISPATCHABLE') < $blob->size()) {
+            $td->dispatchable = false;
+        }
+
+        return .ok($td);
+    }
+
+    if ($cat == 'enum') {
+        $td->kind = TypeKind::enumeration;
+
+        if (!$open->selfClosing) {
+            if (!$c->skipPastClose('type')) {
+                return .error(.unterminated('<type> enum'));
+            }
+        }
+
+        return .ok($td);
+    }
+
+    if ($cat == 'bitmask') {
+        return parseNamedType($c, $open, TypeKind::bitmask);
+    }
+
+    if ($cat == 'basetype') {
+        return parseNamedType($c, $open, TypeKind::basetype);
+    }
+
+    if ($cat == 'funcpointer') {
+        return parseNamedType($c, $open, TypeKind::funcpointer);
+    }
+
+    $td->kind = TypeKind::other;
+
+    if (!$open->selfClosing) {
+        if (!$c->skipPastClose('type')) {
+            return .error(.unterminated('<type>'));
+        }
+    }
+
+    return .ok($td);
+}
+
+private function parseNamedType(xml::Cursor& $c, const xml::Tag& $open, TypeKind $kind) : result<TypeDef, Error>
+{
+    $td = TypeDef();
+    $td->name = $open->attr('name');
+    $td->kind = $kind;
+
+    if (!$open->selfClosing) {
+        $p = guard collectMixed($c, $open, 'type') else ($e) {
+            return .error($e);
+        }
+
+        if ($td->name->empty()) {
+            $td->name = str::trim($p->name);
+        }
+    }
+
+    return .ok($td);
+}
+
+private function parseMembers(xml::Cursor& $c, const xml::Tag& $open, TypeDef& $td) : result<TypeDef, Error>
+{
+    if ($open->selfClosing) {
+        return .ok($td);
+    }
+
+    while (true) {
+        $maybe = guard $c->nextNamed('type', 'member') else ($e) {
+            return .error($e);
+        }
+
+        $t = guard $maybe else {
+            return .ok($td);
+        }
+
+        $p = guard collectMixed($c, $t, 'member') else ($e) {
+            return .error($e);
+        }
+
+        $p->values = $t->attr('values');
+        $d = guard types::fromPieces($p) else ($e) {
+            return .error(.context($td->name, $e->message()));
+        }
+
+        $m = Member();
+        $m->decl = $d;
+        $m->values = $p->values;
+        $td->members[] = $m;
+    }
+}
+
+public function collectMixed(xml::Cursor& $c, const xml::Tag& $open, const string& $close) : result<types::Pieces, Error>
+{
+    $p = types::Pieces();
+
+    if ($open->selfClosing) {
+        return .ok($p);
+    }
+
+    MixedStage $stage = MixedStage::prefix;
+
+    while (true) {
+        if ($c->eof()) {
+            return .error(.unterminated("<{$close}>"));
+        }
+
+        if ($c->peek() == 60) {
+            $t = guard $c->nextTag() else {
+                return .error(.unterminated("<{$close}>"));
+            }
+
+            if ($t->closing && $t->name == $close) {
+                break;
+            }
+
+            if ($t->name == 'type' && !$t->closing) {
+                string $ptype = guard takeLeaf($c, 'type') else ($e) {
+                    return .error($e);
+                }
+
+                $p->ptype = $ptype;
+                $stage = MixedStage::mid;
+                continue;
+            }
+
+            if ($t->name == 'name' && !$t->closing) {
+                string $name = guard takeLeaf($c, 'name') else ($e) {
+                    return .error($e);
+                }
+
+                $p->name = $name;
+                $stage = MixedStage::suffix;
+                continue;
+            }
+
+            if ($t->name == 'enum' && !$t->closing) {
+                string $arrayEnum = guard takeLeaf($c, 'enum') else ($e) {
+                    return .error($e);
+                }
+
+                $p->arrayEnum = $arrayEnum;
+                continue;
+            }
+
+            $skip = $c->skipBody($t);
+
+            if ($skip->failed()) {
+                return .error($skip->failure());
+            }
+
+            continue;
+        }
+
+        $text = $c->takeText();
+
+        if ($stage == MixedStage::prefix) {
+            $p->prefix->append($text);
+        } else if ($stage == MixedStage::mid) {
+            $p->mid->append($text);
+        } else {
+            $p->suffix->append($text);
+        }
+    }
+
+    return .ok($p);
+}
+
+private function takeLeaf(xml::Cursor& $c, const string& $tag) : result<string, Error>
+{
+    $text = str::trim($c->takeText());
+    $end = guard $c->nextTag() else {
+        return .error(.unterminated("<{$tag}>"));
+    }
+
+    if (!$end->closing || $end->name != $tag) {
+        return .error(.expectedClose($tag));
+    }
+
+    return .ok($text);
+}
+
+internal function parseEnums(xml::Cursor& $c, const xml::Tag& $open, Registry& $reg) : result<bool, Error>
+{
+    if ($open->selfClosing) {
+        return .ok(true);
+    }
+
+    string $groupKind = $open->attr('type');
+    string $bitwidth = $open->attr('bitwidth');
+
+    while (true) {
+        $maybe = guard $c->nextNamed('enums', 'enum') else ($e) {
+            return .error($e);
+        }
+
+        $t = guard $maybe else {
+            return .ok(true);
+        }
+
+        $def = guard parseEnumTag($t, 0) else ($e) {
+            return .error($e);
+        }
+
+        $def->group = $open->attr('name');
+
+        if ($bitwidth == '64' && $def->kind == EnumKind::u32) {
+            $def->kind = EnumKind::u64;
+        }
+
+        if ($groupKind == 'enum' && $open->attr('name') == 'VkResult' && $def->kind == EnumKind::u32) {
+            $def->kind = EnumKind::i32;
+        }
+
+        if ($def->name->empty()) {
+            continue;
+        }
+
+        if (!$reg->enums->has($def->name)) {
+            $reg->enums[$def->name] = $def;
+        }
+    }
+}
+
+public function parseEnumTag(const xml::Tag& $t, int32 $extnumber) : result<EnumDef, Error>
+{
+    $def = EnumDef();
+    $def->name = $t->attr('name');
+    $def->extends = $t->attr('extends');
+    $alias = $t->attr('alias');
+    $value = $t->attr('value');
+    $bitpos = $t->attr('bitpos');
+    $offset = $t->attr('offset');
+    $ty = $t->attr('type');
+
+    if (!$alias->empty()) {
+        $def->alias = $alias;
+        $def->kind = EnumKind::alias;
+        $def->resolved = false;
+
+        return .ok($def);
+    }
+
+    if (!$value->empty()) {
+        if ($value->starts('"') || $value->starts('&quot;')) {
+            $s = xml::decode($value);
+
+            if ($s->starts('"')) {
+                $s = $s->sub(1, $s->size() - 2);
+            }
+
+            $def->kind = EnumKind::str;
+            $def->text = $s;
+            $def->resolved = true;
+
+            return .ok($def);
+        }
+
+        if ($value->find('.') < $value->size() || $value->ends('F') || $value->ends('f')) {
+            $def->kind = EnumKind::f32;
+            $def->text = $value;
+            $def->resolved = true;
+
+            return .ok($def);
+        }
+
+        uint64 $n = guard types::parseEnum($value) else ($e) {
+            return .error(.context($def->name, $e->message()));
+        }
+
+        $def->value = $n;
+        $def->resolved = true;
+
+        if ($ty == 'uint64_t' || $value->find('ULL') < $value->size()) {
+            $def->kind = EnumKind::u64;
+        } else if ($value->byte(0) == 45) {
+            $def->kind = EnumKind::i32;
+        } else {
+            $def->kind = EnumKind::u32;
+        }
+
+        return .ok($def);
+    }
+
+    if (!$bitpos->empty()) {
+        uint64 $n = guard types::parseBitpos($bitpos) else ($e) {
+            return .error(.context($def->name, $e->message()));
+        }
+
+        $def->value = $n;
+        $def->resolved = true;
+        $def->kind = EnumKind::u32;
+
+        if ($n > 0xFFFFFFFF) {
+            $def->kind = EnumKind::u64;
+        }
+
+        return .ok($def);
+    }
+
+    if (!$offset->empty()) {
+        int64 $off = guard str::int($offset) else {
+            return .error(.notInteger($offset));
+        }
+
+        int32 $en = $extnumber;
+        $extn = $t->attr('extnumber');
+
+        if (!$extn->empty()) {
+            int64 $x = guard str::int($extn) else {
+                return .error(.notInteger($extn));
+            }
+
+            $en = $x as int32;
+        }
+
+        bool $neg = $t->attr('dir') == '-';
+        uint64 $n = guard types::parseOffset($en, $off as int32, $neg) else ($e) {
+            return .error($e);
+        }
+
+        $def->value = $n;
+        $def->resolved = true;
+        $def->kind = EnumKind::u32;
+
+        if ($neg) {
+            $def->kind = EnumKind::i32;
+        }
+
+        return .ok($def);
+    }
+
+    return .ok($def);
+}
+
+internal function parseCommands(xml::Cursor& $c, const xml::Tag& $open, Registry& $reg) : result<bool, Error>
+{
+    if ($open->selfClosing) {
+        return .ok(true);
+    }
+
+    while (true) {
+        $maybe = guard $c->nextNamed('commands', 'command') else ($e) {
+            return .error($e);
+        }
+
+        $t = guard $maybe else {
+            return .ok(true);
+        }
+
+        $cmd = guard parseCommand($c, $t) else ($e) {
+            return .error($e);
+        }
+
+        if ($cmd->name->empty()) {
+            continue;
+        }
+
+        if (!apiAllows($cmd->api, 'vulkan')) {
+            continue;
+        }
+
+        if (!$reg->commands->has($cmd->name)) {
+            $reg->commands[$cmd->name] = $cmd;
+        }
+    }
+}
+
+private function parseCommand(xml::Cursor& $c, const xml::Tag& $open) : result<Command, Error>
+{
+    $cmd = Command();
+    $cmd->name = $open->attr('name');
+    $cmd->alias = $open->attr('alias');
+    $cmd->api = $open->attr('api');
+
+    if (!$cmd->alias->empty()) {
+        if (!$open->selfClosing) {
+            if (!$c->skipPastClose('command')) {
+                return .error(.unterminated('<command> alias'));
+            }
+        }
+
+        return .ok($cmd);
+    }
+
+    if ($open->selfClosing) {
+        return .error(.emptyCommand);
+    }
+
+    while (true) {
+        $maybe = guard $c->nextOpen('command') else ($e) {
+            return .error($e);
+        }
+
+        $t = guard $maybe else {
+            break;
+        }
+
+        if ($t->name == 'proto') {
+            $p = guard collectMixed($c, $t, 'proto') else ($e) {
+                return .error($e);
+            }
+
+            $d = guard types::fromPieces($p) else ($e) {
+                return .error($e);
+            }
+
+            $cmd->name = $d->name;
+            $cmd->retDecl = $d;
+            continue;
+        }
+
+        if ($t->name == 'param') {
+            if (!apiAllows($t->attr('api'), 'vulkan')) {
+                $skip = $c->skipBody($t);
+
+                if ($skip->failed()) {
+                    return .error($skip->failure());
+                }
+
+                continue;
+            }
+
+            $p = guard collectMixed($c, $t, 'param') else ($e) {
+                return .error($e);
+            }
+
+            $d = guard types::fromPieces($p) else ($e) {
+                return .error(.context($cmd->name, $e->message()));
+            }
+
+            $cmd->argDecls[] = $d;
+            continue;
+        }
+
+        $skip = $c->skipBody($t);
+
+        if ($skip->failed()) {
+            return .error($skip->failure());
+        }
+    }
+
+    if ($cmd->name->empty()) {
+        return .error(.missingProto);
+    }
+
+    $cmd->level = classify($cmd);
+
+    return .ok($cmd);
+}
+
+public function classify(const Command& $cmd) : CmdLevel
+{
+    if ($cmd->name == 'vkGetInstanceProcAddr') {
+        return CmdLevel::global;
+    }
+
+    if ($cmd->name == 'vkGetDeviceProcAddr') {
+        return CmdLevel::instance;
+    }
+
+    if ($cmd->argDecls->count() == 0) {
+        return CmdLevel::global;
+    }
+
+    string $first = $cmd->argDecls[0]->base;
+
+    if ($first->equals('VkInstance') || $first->equals('VkPhysicalDevice')) {
+        return CmdLevel::instance;
+    }
+
+    if ($first->equals('VkDevice') || $first->equals('VkQueue') || $first->equals('VkCommandBuffer')) {
+        return CmdLevel::device;
+    }
+
+    return CmdLevel::global;
+}
+
+internal function parseFeature(xml::Cursor& $c, const xml::Tag& $open) : result<Feature, Error>
+{
+    $f = Feature();
+    $f->api = $open->attr('api');
+    $f->name = $open->attr('name');
+
+    $ver = parseVersion($open->attr('number'), $f->major, $f->minor);
+
+    if ($ver->failed()) {
+        return .error(.context("feature {$f->name}", $ver->failure()->message()));
+    }
+
+    if ($open->selfClosing) {
+        return .ok($f);
+    }
+
+    while (true) {
+        $maybe = guard $c->nextNamed('feature', 'require') else ($e) {
+            return .error($e);
+        }
+
+        $t = guard $maybe else {
+            return .ok($f);
+        }
+
+        $set = guard parseRequireSet($c, $t, 'require', 0) else ($e) {
+            return .error($e);
+        }
+
+        $f->requires[] = $set;
+    }
+}
+
+internal function parseExtensions(xml::Cursor& $c, const xml::Tag& $open, Registry& $reg) : result<bool, Error>
+{
+    if ($open->selfClosing) {
+        return .ok(true);
+    }
+
+    while (true) {
+        $maybe = guard $c->nextNamed('extensions', 'extension') else ($e) {
+            return .error($e);
+        }
+
+        $t = guard $maybe else {
+            return .ok(true);
+        }
+
+        $ext = guard parseExtension($c, $t) else ($e) {
+            return .error($e);
+        }
+
+        if (!$reg->extensions->has($ext->name)) {
+            $reg->extensions[$ext->name] = $ext;
+        }
+    }
+}
+
+private function parseExtension(xml::Cursor& $c, const xml::Tag& $open) : result<Extension, Error>
+{
+    $ext = Extension();
+    $ext->name = $open->attr('name');
+    $ext->supported = $open->attr('supported');
+    $num = $open->attr('number');
+
+    if (!$num->empty()) {
+        int64 $n = guard str::int($num) else {
+            return .error(.notInteger($num));
+        }
+
+        $ext->number = $n as int32;
+    }
+
+    if ($open->selfClosing) {
+        return .ok($ext);
+    }
+
+    while (true) {
+        $maybe = guard $c->nextNamed('extension', 'require') else ($e) {
+            return .error($e);
+        }
+
+        $t = guard $maybe else {
+            return .ok($ext);
+        }
+
+        $set = guard parseRequireSet($c, $t, 'require', $ext->number) else ($e) {
+            return .error($e);
+        }
+
+        $ext->requires[] = $set;
+    }
+}
+
+private function parseRequireSet(xml::Cursor& $c, const xml::Tag& $open, const string& $close, int32 $extnumber) : result<RequireSet, Error>
+{
+    $set = RequireSet();
+    $set->api = $open->attr('api');
+    $set->extnumber = $extnumber;
+
+    if ($open->selfClosing) {
+        return .ok($set);
+    }
+
+    while (true) {
+        $maybe = guard $c->nextOpen($close) else ($e) {
+            return .error($e);
+        }
+
+        $t = guard $maybe else {
+            return .ok($set);
+        }
+
+        if ($t->name == 'enum') {
+            $name = $t->attr('name');
+
+            if (!$name->empty()) {
+                $set->enums[] = $name;
+            }
+
+            $def = guard parseEnumTag($t, $extnumber) else ($e) {
+                return .error($e);
+            }
+
+            if (!$def->name->empty() && ($def->resolved || !$def->alias->empty())) {
+                $set->definedEnums[] = $def;
+            }
+        } else if ($t->name == 'command') {
+            $name = $t->attr('name');
+
+            if (!$name->empty()) {
+                $set->commands[] = $name;
+            }
+        } else if ($t->name == 'type') {
+            $name = $t->attr('name');
+
+            if (!$name->empty()) {
+                $set->types[] = $name;
+            }
+        }
+
+        $skip = $c->skipBody($t);
+
+        if ($skip->failed()) {
+            return .error($skip->failure());
+        }
+    }
+}

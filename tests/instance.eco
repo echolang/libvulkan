@@ -1,0 +1,50 @@
+/**
+ * Needs an ICD. On this Mac that is MoltenVK via dlopen.
+ * Returns without asserting if none is present, so a VM without
+ * Vulkan does not look like an API bug.
+ */
+
+#[group: "vulkan"]
+test load_default_and_enumerate
+{
+    if (!vk::available()) {
+        return;
+    }
+
+    usize $n = vk::loadDefault();
+    assert($n > 0);
+
+    uint32 $ver = 0;
+    vk::Result $r = vk::EnumerateInstanceVersion(&$ver);
+    assert($r == vk::Result::success);
+    assert($ver > 0);
+}
+
+#[group: "vulkan"]
+test enumerate_instance_extensions
+{
+    if (!vk::available()) {
+        return;
+    }
+
+    usize $n = vk::loadDefault();
+    assert($n > 0);
+
+    uint32 $count = 0;
+    vk::Result $r = vk::EnumerateInstanceExtensionProperties(null, &$count, null);
+    assert($r == vk::Result::success);
+    assert($count > 0);
+
+    array<vk::ExtensionProperties> $exts = arr::room<vk::ExtensionProperties>($count as usize);
+    uint32 $i = 0;
+
+    while ($i < $count) {
+        $exts[] = vk::ExtensionProperties();
+        $i = $i + 1;
+    }
+
+    $r = vk::EnumerateInstanceExtensionProperties(null, &$count, &$exts[0]);
+    assert($r == vk::Result::success);
+    ptr<const uint8> $name = &$exts[0]->extensionName[0];
+    assert(str::from($name)->size() > 0);
+}

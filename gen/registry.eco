@@ -1,0 +1,494 @@
+/**
+ * the Khronos Vulkan registry as data, plus the parse that fills one
+ *
+ * unlike gl.xml, vk.xml is a type graph: handles, structs, unions, and
+ * commands. feature / extension `<require>` blocks also define enum
+ * values (offset, bitpos, alias, quoted names)
+ */
+
+namespace vkgen::reg;
+
+use vkgen::xml;
+use vkgen::types;
+use vkgen::Error;
+
+internal interface Named
+{
+    const function named() : string;
+}
+
+public enum TypeKind
+{
+    case handle;
+    case structure;
+    case union;
+    case enumeration;
+    case bitmask;
+    case basetype;
+    case funcpointer;
+    case alias;
+    case other;
+}
+
+public enum EnumKind
+{
+    case u32;
+    case u64;
+    case i32;
+    case f32;
+    case str;
+    case alias;
+}
+
+public struct Member
+{
+    public types::CDecl $decl;
+    public string $values;
+
+    public constructor()
+    {
+        $this->decl = types::CDecl();
+        $this->values = '';
+    }
+}
+
+public struct TypeDef : Named
+{
+    public string $name;
+    public TypeKind $kind;
+    public string $alias;
+    public array<Member> $members;
+    public bool $dispatchable;
+
+    public constructor()
+    {
+        $this->name = '';
+        $this->kind = TypeKind::other;
+        $this->alias = '';
+        $this->members = array<Member>();
+        $this->dispatchable = true;
+    }
+
+    public const function named() : string
+    {
+        return $this->name;
+    }
+}
+
+public struct EnumDef : Named
+{
+    public string $name;
+    public uint64 $value;
+    public EnumKind $kind;
+    public string $text;
+    public string $alias;
+    public string $group;
+    public string $extends;
+    public bool $resolved;
+
+    public constructor()
+    {
+        $this->name = '';
+        $this->value = 0;
+        $this->kind = EnumKind::u32;
+        $this->text = '';
+        $this->alias = '';
+        $this->group = '';
+        $this->extends = '';
+        $this->resolved = false;
+    }
+
+    public const function named() : string
+    {
+        return $this->name;
+    }
+}
+
+public struct Param
+{
+    public string $cName;
+    public string $echoType;
+    public string $externType;
+    public bool $handleByValue;
+    public types::CDecl $decl;
+
+    public constructor()
+    {
+        $this->cName = '';
+        $this->echoType = '';
+        $this->externType = '';
+        $this->handleByValue = false;
+        $this->decl = types::CDecl();
+    }
+}
+
+public enum CmdLevel
+{
+    case global;
+    case instance;
+    case device;
+}
+
+public struct Command : Named
+{
+    public string $name;
+    public string $alias;
+    public string $api;
+    public string $retEcho;
+    public string $retExtern;
+    public array<Param> $params;
+    public types::CDecl $retDecl;
+    public array<types::CDecl> $argDecls;
+    public CmdLevel $level;
+
+    public constructor()
+    {
+        $this->name = '';
+        $this->alias = '';
+        $this->api = '';
+        $this->retEcho = 'void';
+        $this->retExtern = 'void';
+        $this->params = array<Param>();
+        $this->retDecl = types::CDecl();
+        $this->argDecls = array<types::CDecl>();
+        $this->level = CmdLevel::global;
+    }
+
+    public const function named() : string
+    {
+        return $this->name;
+    }
+}
+
+public struct RequireSet
+{
+    public string $api;
+    public array<string> $enums;
+    public array<string> $commands;
+    public array<string> $types;
+    public array<EnumDef> $definedEnums;
+    public int32 $extnumber;
+
+    public constructor()
+    {
+        $this->api = '';
+        $this->enums = array<string>();
+        $this->commands = array<string>();
+        $this->types = array<string>();
+        $this->definedEnums = array<EnumDef>();
+        $this->extnumber = 0;
+    }
+}
+
+public struct Feature
+{
+    public string $api;
+    public string $name;
+    public int32 $major;
+    public int32 $minor;
+    public array<RequireSet> $requires;
+
+    public constructor()
+    {
+        $this->api = '';
+        $this->name = '';
+        $this->major = 0;
+        $this->minor = 0;
+        $this->requires = array<RequireSet>();
+    }
+}
+
+public struct Extension
+{
+    public string $name;
+    public string $supported;
+    public int32 $number;
+    public array<RequireSet> $requires;
+
+    public constructor()
+    {
+        $this->name = '';
+        $this->supported = '';
+        $this->number = 0;
+        $this->requires = array<RequireSet>();
+    }
+}
+
+public struct Registry
+{
+    public ordered_map<string, EnumDef> $enums;
+    public ordered_map<string, Command> $commands;
+    public ordered_map<string, TypeDef> $types;
+    public array<Feature> $features;
+    public ordered_map<string, Extension> $extensions;
+
+    public constructor()
+    {
+        $this->enums = ordered_map<string, EnumDef>();
+        $this->commands = ordered_map<string, Command>();
+        $this->types = ordered_map<string, TypeDef>();
+        $this->features = array<Feature>();
+        $this->extensions = ordered_map<string, Extension>();
+    }
+}
+
+public function parse(const string& $xml) : result<Registry, Error>
+{
+    $c = xml::Cursor($xml);
+    $reg = Registry();
+
+    $root = guard $c->nextTag() else {
+        return .error(.emptyRegistry);
+    }
+
+    if ($root->name != 'registry' || $root->closing) {
+        return .error(.expectedRegistry($root->name));
+    }
+
+    while (true) {
+        $maybe = guard $c->nextOpen('registry') else ($e) {
+            return .error($e);
+        }
+
+        $t = guard $maybe else {
+            break;
+        }
+
+        if ($t->name == 'types') {
+            $ok = parseTypes($c, $t, $reg);
+
+            if ($ok->failed()) {
+                return .error($ok->failure());
+            }
+
+            continue;
+        }
+
+        if ($t->name == 'enums') {
+            $ok = parseEnums($c, $t, $reg);
+
+            if ($ok->failed()) {
+                return .error($ok->failure());
+            }
+
+            continue;
+        }
+
+        if ($t->name == 'commands') {
+            $ok = parseCommands($c, $t, $reg);
+
+            if ($ok->failed()) {
+                return .error($ok->failure());
+            }
+
+            continue;
+        }
+
+        if ($t->name == 'feature') {
+            $f = guard parseFeature($c, $t) else ($e) {
+                return .error($e);
+            }
+
+            $reg->features[] = $f;
+            continue;
+        }
+
+        if ($t->name == 'extensions') {
+            $ok = parseExtensions($c, $t, $reg);
+
+            if ($ok->failed()) {
+                return .error($ok->failure());
+            }
+
+            continue;
+        }
+
+        $skip = $c->skipBody($t);
+
+        if ($skip->failed()) {
+            return .error($skip->failure());
+        }
+    }
+
+    mergeDefinedEnums($reg);
+
+    $res = resolveAliases($reg);
+
+    if ($res->failed()) {
+        return .error($res->failure());
+    }
+
+    return .ok($reg);
+}
+
+private function mergeDefinedEnums(Registry& $reg) : void
+{
+    usize $i = 0;
+
+    while ($i < $reg->features->count()) {
+        mergeSetEnums($reg, $reg->features[$i]->requires);
+        $i = $i + 1;
+    }
+
+    foreach ($reg->extensions as $name => $ext) {
+        mergeSetEnums($reg, $ext->requires);
+    }
+}
+
+private function mergeSetEnums(Registry& $reg, const array<RequireSet>& $sets) : void
+{
+    usize $i = 0;
+
+    while ($i < $sets->count()) {
+        usize $n = 0;
+
+        while ($n < $sets[$i]->definedEnums->count()) {
+            $d = $sets[$i]->definedEnums[$n];
+
+            if (!$d->name->empty() && !$reg->enums->has($d->name)) {
+                $reg->enums[$d->name] = $d;
+            }
+
+            $n = $n + 1;
+        }
+
+        $i = $i + 1;
+    }
+}
+
+public function parseVersion(const string& $text, int32& $major, int32& $minor) : result<bool, Error>
+{
+    $bits = str::split($text, '.');
+
+    if ($bits->count() != 2) {
+        return .error(.badVersion($text));
+    }
+
+    int64 $maj = guard str::int(string::from($bits->at(0))) else {
+        return .error(.badNumber($text));
+    }
+
+    int64 $min = guard str::int(string::from($bits->at(1))) else {
+        return .error(.badNumber($text));
+    }
+
+    $major = $maj as int32;
+    $minor = $min as int32;
+
+    return .ok(true);
+}
+
+private function resolveAliases(Registry& $reg) : result<bool, Error>
+{
+    int32 $pass = 0;
+
+    while ($pass < 8) {
+        bool $progress = false;
+
+        foreach ($reg->enums as $name => $def) {
+            if ($def->resolved) {
+                continue;
+            }
+
+            if ($def->alias->empty()) {
+                continue;
+            }
+
+            if (!$reg->enums->has($def->alias)) {
+                continue;
+            }
+
+            $src = $reg->enums->get($def->alias);
+
+            if (!$src->resolved) {
+                continue;
+            }
+
+            $def->value = $src->value;
+            $def->kind = $src->kind;
+            $def->text = $src->text;
+            $def->resolved = true;
+            $reg->enums[$name] = $def;
+            $progress = true;
+        }
+
+        if (!$progress) {
+            break;
+        }
+
+        $pass = $pass + 1;
+    }
+
+    return .ok(true);
+}
+
+public function apiAllows(const string& $supported, const string& $api) : bool
+{
+    if ($supported->empty()) {
+        return true;
+    }
+
+    $bits = str::split($supported, ',');
+    usize $i = 0;
+
+    while ($i < $bits->count()) {
+        if (str::trim(string::from($bits->at($i))) == $api) {
+            return true;
+        }
+
+        $i = $i + 1;
+    }
+
+    return false;
+}
+
+public function isHandle(const Registry& $reg, const string& $name) : result<bool, Error>
+{
+    $n = guard resolveTypeName($reg, $name) else ($e) {
+        return .error($e);
+    }
+
+    if (!$reg->types->has($n)) {
+        return .ok(false);
+    }
+
+    return .ok($reg->types->get($n)->kind == TypeKind::handle);
+}
+
+public function isStructish(const Registry& $reg, const string& $name) : result<bool, Error>
+{
+    $n = guard resolveTypeName($reg, $name) else ($e) {
+        return .error($e);
+    }
+
+    if (!$reg->types->has($n)) {
+        return .ok(false);
+    }
+
+    $k = $reg->types->get($n)->kind;
+
+    return .ok($k == TypeKind::structure || $k == TypeKind::union);
+}
+
+public function resolveTypeName(const Registry& $reg, const string& $name) : result<string, Error>
+{
+    string $n = $name;
+    int32 $i = 0;
+
+    while ($i < 8) {
+        if (!$reg->types->has($n)) {
+            return .ok($n);
+        }
+
+        $td = $reg->types->get($n);
+
+        if ($td->kind != TypeKind::alias || $td->alias->empty()) {
+            return .ok($n);
+        }
+
+        $n = $td->alias;
+        $i = $i + 1;
+    }
+
+    return .error(.unresolvedAlias($name, $n));
+}

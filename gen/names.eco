@@ -1,0 +1,141 @@
+/**
+ * strip Vk / VK_ / vk prefixes and keep the result an Echo identifier
+ */
+
+namespace vkgen::feat;
+
+use vkgen::types;
+use vkgen::Error;
+
+public function stripType(const string& $vk) : result<string, Error>
+{
+    string $n = $vk;
+
+    if ($n->starts('Vk')) {
+        $n = $n->sub(2, $n->size() - 2);
+    }
+
+    return identAfterStrip($vk, $n, 'type');
+}
+
+public function stripConst(const string& $vk) : result<string, Error>
+{
+    string $n = $vk;
+
+    if ($n->starts('VK_')) {
+        $n = $n->sub(3, $n->size() - 3);
+    }
+
+    return identAfterStrip($vk, $n, 'enum');
+}
+
+public function stripFn(const string& $vk) : result<string, Error>
+{
+    string $n = $vk;
+
+    if ($n->starts('vk')) {
+        $n = $n->sub(2, $n->size() - 2);
+    }
+
+    return identAfterStrip($vk, $n, 'command');
+}
+
+public function enumCase(const string& $vk) : result<string, Error>
+{
+    string $n = $vk;
+
+    if ($n->starts('VK_')) {
+        $n = $n->sub(3, $n->size() - 3);
+    }
+
+    return identAfterStrip($vk, screamToCamel($n), 'enum case');
+}
+
+private function screamToCamel(const string& $s) : string
+{
+    $bits = str::split($s, '_');
+    $out = '';
+    usize $i = 0;
+
+    while ($i < $bits->count()) {
+        string $w = string::from($bits->at($i));
+
+        if (!$w->empty()) {
+            $w = str::lower($w);
+
+            if ($i > 0) {
+                $w = str::ucfirst($w);
+            }
+
+            $out->append($w);
+        }
+
+        $i = $i + 1;
+    }
+
+    return $out;
+}
+
+private function identAfterStrip(const string& $vk, const string& $stripped, const string& $kind) : result<string, Error>
+{
+    string $n = $stripped;
+
+    if ($n->empty()) {
+        return .error(.emptyName($kind, $vk));
+    }
+
+    if (startsDigit($n)) {
+        $n = "_{$n}";
+    }
+
+    if (!isEchoIdent($n)) {
+        return .error(.nonIdent($kind, $vk, $n));
+    }
+
+    return .ok($n);
+}
+
+private function startsDigit(const string& $s) : bool
+{
+    if ($s->empty()) {
+        return false;
+    }
+
+    uint8 $b = $s->byte(0);
+
+    return $b >= 48 && $b <= 57;
+}
+
+private function isEchoIdent(const string& $s) : bool
+{
+    if ($s->empty()) {
+        return false;
+    }
+
+    uint8 $first = $s->byte(0);
+
+    if (!types::isIdentStart($first)) {
+        return false;
+    }
+
+    usize $i = 1;
+
+    while ($i < $s->size()) {
+        if (!types::isIdentChar($s->byte($i))) {
+            return false;
+        }
+
+        $i = $i + 1;
+    }
+
+    return true;
+}
+
+public function paramName(const string& $raw, usize $index) : string
+{
+    if (isEchoIdent($raw) && $raw != 'this' && $raw != 'constructor' && $raw != 'destructor' && $raw != 'init' && $raw != 'function' && $raw != 'match' && $raw != 'guard' && $raw != 'return') {
+        return $raw;
+    }
+
+    return "p{$index}";
+}

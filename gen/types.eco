@@ -1,0 +1,457 @@
+/**
+ * Vulkan / C declarators to Echo types, plus enum-value parsing.
+ *
+ * A `<param>` / `<proto>` / `<member>` is prefix + optional `<ptype>` + mid
+ * + `<name>` + suffix. Stars live in prefix/mid; `[N]` / `[<enum>]` in the
+ * suffix. Interior consts are dropped (ABI-identical); the base const is
+ * kept, so `const char *const*` is `ptr<ptr<const uint8>>`.
+ */
+
+namespace vkgen::types;
+
+use vkgen::Error;
+
+public struct Pieces
+{
+    public string $prefix;
+    public string $ptype;
+    public string $mid;
+    public string $suffix;
+    public string $name;
+    public string $arrayEnum;
+    public string $values;
+
+    public constructor()
+    {
+        $this->prefix = '';
+        $this->ptype = '';
+        $this->mid = '';
+        $this->suffix = '';
+        $this->name = '';
+        $this->arrayEnum = '';
+        $this->values = '';
+    }
+}
+
+public struct CDecl
+{
+    public string $base;
+    public bool $baseConst;
+    public int32 $stars;
+    public string $name;
+    public int32 $arrayN;
+    public string $arrayEnum;
+
+    public constructor()
+    {
+        $this->base = '';
+        $this->baseConst = false;
+        $this->stars = 0;
+        $this->name = '';
+        $this->arrayN = 0;
+        $this->arrayEnum = '';
+    }
+}
+
+public function fromPieces(const Pieces& $p) : result<CDecl, Error>
+{
+    string $text = $p->prefix;
+    $text->append($p->ptype);
+    $text->append($p->mid);
+    $text->append($p->suffix);
+
+    CDecl $d = guard parse($text) else ($e) {
+        return .error($e);
+    }
+
+    $d->name = str::trim($p->name);
+
+    if ($d->arrayEnum->empty() && !$p->arrayEnum->empty()) {
+        $d->arrayEnum = $p->arrayEnum;
+    }
+
+    if (!$d->arrayEnum->empty() && $d->arrayN == 0 && $d->stars > 0) {
+        $d->stars = $d->stars - 1;
+    }
+
+    return .ok($d);
+}
+
+public function parse(const string& $text) : result<CDecl, Error>
+{
+    $s = str::trim($text);
+    usize $i = 0;
+    $d = CDecl();
+    $sawStar = false;
+
+    skipSpaces($s, $i);
+
+    while (atKeyword($s, $i, 'const')) {
+        $d->baseConst = true;
+        $i = $i + 5;
+        skipSpaces($s, $i);
+    }
+
+    if (atKeyword($s, $i, 'struct')) {
+        $i = $i + 6;
+        skipSpaces($s, $i);
+        $ident = takeIdent($s, $i);
+
+        if ($ident->empty()) {
+            return .error(.missingStructName($s));
+        }
+
+        $d->base = $ident;
+    } else {
+        $d->base = takeIdent($s, $i);
+
+        if ($d->base->empty()) {
+            return .error(.missingTypeName($s));
+        }
+    }
+
+    while (true) {
+        skipSpaces($s, $i);
+
+        if ($i >= $s->size()) {
+            break;
+        }
+
+        if (atKeyword($s, $i, 'const')) {
+            if (!$sawStar) {
+                $d->baseConst = true;
+            }
+
+            $i = $i + 5;
+            continue;
+        }
+
+        uint8 $b = $s->byte($i);
+
+        if ($b == 42) {
+            $sawStar = true;
+            $d->stars = $d->stars + 1;
+            $i = $i + 1;
+            continue;
+        }
+
+        if ($b == 91) {
+            $i = $i + 1;
+            usize $start = $i;
+
+            while ($i < $s->size() && $s->byte($i) != 93) {
+                $i = $i + 1;
+            }
+
+            if ($i >= $s->size()) {
+                return .error(.unterminatedArray($s));
+            }
+
+            $inside = str::trim($s->sub($start, $i - $start));
+            $i = $i + 1;
+
+            if ($inside->empty()) {
+                $d->stars = $d->stars + 1;
+                $sawStar = true;
+            } else if (isDigits($inside)) {
+                int64 $n = guard str::int($inside) else {
+                    return .error(.unterminatedArray($s));
+                }
+
+                $d->arrayN = $n as int32;
+            } else {
+                $d->arrayEnum = $inside;
+            }
+
+            continue;
+        }
+
+        break;
+    }
+
+    return .ok($d);
+}
+
+private function isDigits(const string& $s) : bool
+{
+    if ($s->empty()) {
+        return false;
+    }
+
+    usize $i = 0;
+
+    while ($i < $s->size()) {
+        uint8 $b = $s->byte($i);
+
+        if ($b < 48 || $b > 57) {
+            return false;
+        }
+
+        $i = $i + 1;
+    }
+
+    return true;
+}
+
+/**
+ * Integer / bitmask / (~0U) / bitpos constants. Floats and quoted strings
+ * are not this function: the registry parser branches first.
+ */
+public function parseEnum(const string& $text) : result<uint64, Error>
+{
+    $s = str::trim($text);
+
+    if ($s->empty()) {
+        return .error(.emptyEnumValue);
+    }
+
+    if ($s == '(~0U)' || $s == '(~0u)' || $s == '~0U' || $s == '(~0)') {
+        return .ok(0xFFFFFFFF);
+    }
+
+    if ($s == '(~1U)' || $s == '(~1u)' || $s == '~1U') {
+        return .ok(0xFFFFFFFE);
+    }
+
+    if ($s == '(~0ULL)' || $s == '(~0ull)' || $s == '~0ULL') {
+        return .ok(0xFFFFFFFFFFFFFFFF);
+    }
+
+    if ($s == '(~2U)' || $s == '~2U') {
+        return .ok(0xFFFFFFFD);
+    }
+
+    if ($s->byte(0) == 45) {
+        int64 $n = guard str::int($s) else {
+            return .error(.notInteger($s));
+        }
+
+        if ($n >= 0) {
+            return .ok($n as uint64);
+        }
+
+        if ($n < -2147483648) {
+            return .error(.enumDoesNotFit($s));
+        }
+
+        uint64 $mag = (0 - $n) as uint64;
+        uint64 $two32 = 0x100000000;
+
+        return .ok($two32 - $mag);
+    }
+
+    $body = stripIntSuffix($s);
+    uint64 $v = guard str::uint($body) else {
+        return .error(.notUnsigned($s));
+    }
+
+    return .ok($v);
+}
+
+public function parseBitpos(const string& $text) : result<uint64, Error>
+{
+    int64 $n = guard str::int(str::trim($text)) else {
+        return .error(.notInteger($text));
+    }
+
+    if ($n < 0 || $n > 63) {
+        return .error(.enumDoesNotFit($text));
+    }
+
+    uint64 $one = 1;
+    int32 $shift = $n as int32;
+    uint64 $v = $one;
+
+    int32 $i = 0;
+
+    while ($i < $shift) {
+        $v = $v * 2;
+        $i = $i + 1;
+    }
+
+    return .ok($v);
+}
+
+/**
+ * Extension enum: 1_000_000_000 + (extnumber - 1) * 1000 + offset.
+ * `dir="-"` is a negative VkResult-style code stored as two's complement uint32.
+ */
+public function parseOffset(int32 $extnumber, int32 $offset, bool $negative) : result<uint64, Error>
+{
+    if ($extnumber < 1) {
+        return .error(.badNumber("extnumber {$extnumber}"));
+    }
+
+    uint64 $base = 1000000000;
+    uint64 $block = 1000;
+    uint64 $en = ($extnumber - 1) as uint64;
+    uint64 $off = $offset as uint64;
+    uint64 $v = $base + $en * $block + $off;
+
+    if ($negative) {
+        if ($v > 2147483648) {
+            return .error(.enumDoesNotFit("offset {$offset}"));
+        }
+
+        return .ok(0x100000000 - $v);
+    }
+
+    return .ok($v);
+}
+
+private function stripIntSuffix(const string& $s) : string
+{
+    usize $n = $s->size();
+
+    while ($n > 0) {
+        uint8 $b = $s->byte($n - 1);
+
+        if ($b == 117 || $b == 85 || $b == 108 || $b == 76) {
+            $n = $n - 1;
+        } else {
+            break;
+        }
+    }
+
+    return $s->sub(0, $n);
+}
+
+private function skipSpaces(const string& $s, usize& $i) : void
+{
+    while ($i < $s->size()) {
+        uint8 $b = $s->byte($i);
+
+        if ($b == 32 || $b == 9 || $b == 10 || $b == 13) {
+            $i = $i + 1;
+        } else {
+            break;
+        }
+    }
+}
+
+private function atKeyword(const string& $s, usize $i, const string& $word) : bool
+{
+    usize $n = $word->size();
+
+    if ($i >= $s->size()) {
+        return false;
+    }
+
+    if ($n > $s->size() - $i) {
+        return false;
+    }
+
+    if ($s->sub($i, $n) != $word) {
+        return false;
+    }
+
+    if ($i + $n < $s->size()) {
+        if (isIdentChar($s->byte($i + $n))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+private function takeIdent(const string& $s, usize& $i) : string
+{
+    usize $start = $i;
+
+    if ($i < $s->size() && isIdentStart($s->byte($i))) {
+        $i = $i + 1;
+
+        while ($i < $s->size() && isIdentChar($s->byte($i))) {
+            $i = $i + 1;
+        }
+    }
+
+    if ($i == $start) {
+        return '';
+    }
+
+    return $s->sub($start, $i - $start);
+}
+
+public function isIdentStart(uint8 $b) : bool
+{
+    if ($b >= 65 && $b <= 90) {
+        return true;
+    }
+
+    if ($b >= 97 && $b <= 122) {
+        return true;
+    }
+
+    if ($b == 95) {
+        return true;
+    }
+
+    return false;
+}
+
+public function isIdentChar(uint8 $b) : bool
+{
+    if (isIdentStart($b)) {
+        return true;
+    }
+
+    if ($b >= 48 && $b <= 57) {
+        return true;
+    }
+
+    return false;
+}
+
+public function scalarC(const string& $base) : string
+{
+    if ($base == 'char' || $base == 'uint8_t') {
+        return 'uint8';
+    }
+
+    if ($base == 'int8_t') {
+        return 'int8';
+    }
+
+    if ($base == 'int16_t') {
+        return 'int16';
+    }
+
+    if ($base == 'uint16_t') {
+        return 'uint16';
+    }
+
+    if ($base == 'int32_t' || $base == 'int') {
+        return 'int32';
+    }
+
+    if ($base == 'uint32_t' || $base == 'VkFlags' || $base == 'VkBool32' || $base == 'VkSampleMask') {
+        return 'uint32';
+    }
+
+    if ($base == 'int64_t') {
+        return 'int64';
+    }
+
+    if ($base == 'uint64_t' || $base == 'VkDeviceSize' || $base == 'VkDeviceAddress' || $base == 'VkFlags64') {
+        return 'uint64';
+    }
+
+    if ($base == 'size_t') {
+        return 'usize';
+    }
+
+    if ($base == 'float') {
+        return 'float32';
+    }
+
+    if ($base == 'double') {
+        return 'float64';
+    }
+
+    if ($base == 'VkResult') {
+        return 'int32';
+    }
+
+    return '';
+}

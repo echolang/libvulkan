@@ -1,0 +1,11 @@
+/**
+ * An unloaded entry point is a die, not a silent no-op. Fresh per-fork
+ * statics mean the table is still the constructor's stubs.
+ */
+
+#[tests: expects death]
+test an_unloaded_call_dies
+{
+    vk::Instance $instance = vk::Instance::none();
+    vk::DestroyInstance($instance, null);
+}

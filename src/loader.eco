@@ -1,0 +1,120 @@
+/**
+ * Hand-written loader primitives. Names no generated symbol, so this file
+ * still compiles when `src/vk.eco` has been deleted for regeneration.
+ *
+ * `available` / `loadDefault` dlopen a Vulkan loader or MoltenVK. The
+ * generated module fills the command table from a getproc.
+ */
+
+namespace vk;
+
+internal extern {
+    function vk_open_loader as cOpenLoader() : ptr<uint8>;
+    function vk_sym as cSym(ptr<uint8> $lib, ptr<const uint8> $name) : ptr<uint8>;
+}
+
+internal struct Loader
+{
+    public static bool $bound = false;
+    public static ptr<uint8> $lib;
+    public static ptr<uint8> $gipaWord;
+    public static extern function<ptr<uint8>(uint64, ptr<const uint8>)>? $gipa = null;
+}
+
+/**
+ * Why a Vulkan call did not do what you asked.
+ *
+ * An enum, so `guard` / `match` is the call site. `vulkan` carries the
+ * raw `VkResult` (`int32`) so this file names no generated symbol.
+ * `Result::from` that code at a typed destination. `noIcd` is a missing
+ * loader, not a VkResult.
+ */
+public enum Error
+{
+    case vulkan(int32 $code);
+    case noIcd;
+
+    /**
+     * What went wrong, in words.
+     */
+    public const function message() : string
+    {
+        return match ($this) {
+            Error::vulkan($code) => "vk result {$code}",
+            Error::noIcd => 'vk: no ICD',
+        };
+    }
+}
+
+/**
+ * Pack a Vulkan apiVersion word. Variant is 0 for the shipped API.
+ */
+public function makeApiVersion(uint32 $variant, uint32 $major, uint32 $minor, uint32 $patch) : uint32
+{
+    return ($variant << 29) | ($major << 22) | ($minor << 12) | $patch;
+}
+
+internal function bindLoader() : bool
+{
+    if (Loader::$bound) {
+        return true;
+    }
+
+    ptr<uint8> $lib = cOpenLoader();
+
+    if ($lib:$ == null) {
+        return false;
+    }
+
+    string $sym = 'vkGetInstanceProcAddr';
+    ptr<uint8> $p = cSym($lib, $sym->cstr());
+
+    if ($p:$ == null) {
+        return false;
+    }
+
+    Loader::$lib:$ = $lib:$;
+    Loader::$gipaWord:$ = $p:$;
+
+    unsafe {
+        Loader::$gipa = $p:$ as extern function<ptr<uint8>(uint64, ptr<const uint8>)>;
+    }
+
+    Loader::$bound = true;
+
+    return true;
+}
+
+internal function trampoline(ptr<const uint8> $name) : ptr<uint8>
+{
+    $fn = guard Loader::$gipa else {
+        return null;
+    }
+
+    return $fn(0, $name);
+}
+
+/**
+ * True when this process can dlopen a Vulkan loader or MoltenVK and
+ * resolve `vkGetInstanceProcAddr`.
+ */
+public function available() : bool
+{
+    return bindLoader();
+}
+
+/**
+ * The `vkGetInstanceProcAddr` word from the dylib. Pass it to
+ * `glfw::initVulkanLoader` so GLFW uses the same ICD we opened
+ * (MoltenVK is not `libvulkan.1.dylib` on a brew-only Mac).
+ */
+public function getInstanceProcAddrPtr() : ptr<uint8>
+{
+    if (!bindLoader()) {
+        return null;
+    }
+
+    return Loader::$gipaWord:$;
+}
+
+

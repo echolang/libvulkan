@@ -1,0 +1,239 @@
+/**
+ * C declarators to Echo types for folded commands and struct fields
+ */
+
+namespace vkgen::feat;
+
+use vkgen::reg;
+use vkgen::types;
+use vkgen::Error;
+
+internal function bindAll(const reg::Registry& $reg, Folded& $out) : result<bool, Error>
+{
+    usize $i = 0;
+
+    while ($i < $out->commands->count()) {
+        $cmd = $out->commands[$i];
+        $ok = bindCommand($reg, $out, $cmd);
+
+        if ($ok->failed()) {
+            return .error($ok->failure());
+        }
+
+        $out->commands[$i] = $cmd;
+        $i = $i + 1;
+    }
+
+    return .ok(true);
+}
+
+private function bindCommand(const reg::Registry& $reg, const Folded& $out, reg::Command& $cmd) : result<bool, Error>
+{
+    $ret = guard mapDecl($reg, $out, $cmd->retDecl, true, $cmd->name) else ($e) {
+        return .error($e);
+    }
+
+    $cmd->retEcho = $ret;
+    $cmd->retExtern = $ret;
+
+    if ($cmd->retDecl->base == 'PFN_vkVoidFunction' || $cmd->retDecl->base->starts('PFN_')) {
+        $cmd->retEcho = 'ptr<uint8>';
+        $cmd->retExtern = 'ptr<uint8>';
+    }
+
+    string $retBase = $cmd->retDecl->base;
+
+    if ($retBase == 'VkResult' && $cmd->retDecl->stars == 0) {
+        $cmd->retEcho = 'Result';
+        $cmd->retExtern = 'int32';
+    }
+
+    $cmd->params = array<reg::Param>();
+    usize $i = 0;
+
+    while ($i < $cmd->argDecls->count()) {
+        $d = $cmd->argDecls[$i];
+        $p = reg::Param();
+        $p->decl = $d;
+        $p->cName = $d->name;
+        $isH = guard reg::isHandle($reg, $d->base) else ($e) {
+            return .error($e);
+        }
+        $p->handleByValue = $d->stars == 0 && $isH;
+
+        $wrap = guard mapDecl($reg, $out, $d, false, $cmd->name) else ($e) {
+            return .error($e);
+        }
+
+        $ext = $wrap;
+
+        if ($p->handleByValue) {
+            $ext = 'uint64';
+        }
+
+        string $argBase = $d->base;
+
+        if ($d->stars == 0 && $argBase == 'VkResult') {
+            $wrap = 'Result';
+            $ext = 'int32';
+        }
+
+        $p->echoType = $wrap;
+        $p->externType = $ext;
+        $cmd->params[] = $p;
+        $i = $i + 1;
+    }
+
+    return .ok(true);
+}
+
+public function mapFieldElem(
+    const reg::Registry& $reg,
+    const Folded& $out,
+    const types::CDecl& $d,
+    const string& $where
+) : result<string, Error>
+{
+    types::CDecl $elem = types::CDecl();
+    $elem->base = $d->base;
+    $elem->baseConst = $d->baseConst;
+    $elem->stars = $d->stars;
+    $elem->name = $d->name;
+
+    return mapDecl($reg, $out, $elem, false, $where);
+}
+
+public function mapDecl(
+    const reg::Registry& $reg,
+    const Folded& $out,
+    const types::CDecl& $d,
+    bool $asReturn,
+    const string& $where
+) : result<string, Error>
+{
+    int32 $arrayN = $d->arrayN;
+
+    if ($arrayN == 0 && !$d->arrayEnum->empty()) {
+        if (!$out->enumValue->has($d->arrayEnum)) {
+            if (!$reg->enums->has($d->arrayEnum)) {
+                return .error(.unresolvedArray($where, $d->arrayEnum));
+            }
+
+            $arrayN = $reg->enums->get($d->arrayEnum)->value as int32;
+        } else {
+            $arrayN = $out->enumValue->get($d->arrayEnum) as int32;
+        }
+    }
+
+    if ($d->stars == 0 && $d->base == 'void') {
+        if ($asReturn) {
+            return .ok('void');
+        }
+
+        return .error(.voidParam($where));
+    }
+
+    string $inner = guard baseEcho($reg, $d, $where) else ($e) {
+        return .error($e);
+    }
+
+    string $core = $inner;
+
+    if ($d->baseConst && $d->stars > 0) {
+        if (!$core->starts('const ') && !$core->starts('ptr<')) {
+            $core = "const {$core}";
+        }
+    }
+
+    int32 $n = $d->stars;
+
+    while ($n > 0) {
+        $core = "ptr<{$core}>";
+        $n = $n - 1;
+    }
+
+    if ($arrayN > 0 && $d->stars == 0) {
+        $core = "ptr<{$inner}>";
+    }
+
+    return .ok($core);
+}
+
+private function baseEcho(
+    const reg::Registry& $reg,
+    const types::CDecl& $d,
+    const string& $where
+) : result<string, Error>
+{
+    if ($d->base == 'void') {
+        return .ok('uint8');
+    }
+
+    $scalar = types::scalarC($d->base);
+
+    if ($scalar != '') {
+        return .ok($scalar);
+    }
+
+    if ($d->base->starts('PFN_')) {
+        return .ok('ptr<uint8>');
+    }
+
+    $canon = guard reg::resolveTypeName($reg, $d->base) else ($e) {
+        return .error($e);
+    }
+
+    $handle = guard reg::isHandle($reg, $canon) else ($e) {
+        return .error($e);
+    }
+
+    if ($handle) {
+        $echo = guard stripType($canon) else ($e) {
+            return .error($e);
+        }
+
+        return .ok($echo);
+    }
+
+    $structish = guard reg::isStructish($reg, $canon) else ($e) {
+        return .error($e);
+    }
+
+    if ($structish) {
+        $echo = guard stripType($canon) else ($e) {
+            return .error($e);
+        }
+
+        return .ok($echo);
+    }
+
+    if ($reg->types->has($canon)) {
+        $k = $reg->types->get($canon)->kind;
+
+        if ($k == reg::TypeKind::enumeration || $k == reg::TypeKind::bitmask) {
+            if ($canon == 'VkResult') {
+                return .ok('int32');
+            }
+
+            if ($canon == 'VkFlags64' || $canon->ends('Flags2') || $canon->ends('FlagBits2')) {
+                return .ok('uint64');
+            }
+
+            return .ok('uint32');
+        }
+
+        if ($k == reg::TypeKind::basetype || $k == reg::TypeKind::other || $k == reg::TypeKind::funcpointer) {
+            if ($d->stars > 0) {
+                return .ok('uint8');
+            }
+
+            return .ok('ptr<uint8>');
+        }
+    }
+
+    if ($d->stars > 0) {
+        return .ok('uint8');
+    }
+
+    return .error(.unknownType($where, $d->base));
+}

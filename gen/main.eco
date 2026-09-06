@@ -1,0 +1,192 @@
+/*
+ * libvulkan generate
+ *
+ * Parse argv, run the pipeline, write src/vk.eco (or --check it). Every stage
+ * is a result; a failure is a line on stderr and exit 1.
+ */
+
+use vkgen::reg;
+use vkgen::feat;
+use vkgen::emit;
+use vkgen::Error;
+
+internal const string REGISTRY_SHA = '31386378257ac8653ce5b32c93baec385259ebbe';
+
+private struct Args
+{
+    public string $xml;
+    public string $out;
+    public string $api;
+    public string $version;
+    public array<string> $exts;
+    public bool $check;
+    public bool $help;
+
+    public constructor()
+    {
+        $this->xml = 'vk.xml';
+        $this->out = 'src/vk.eco';
+        $this->api = 'vulkan';
+        $this->version = '1.3';
+        $this->exts = defaultExts();
+        $this->check = false;
+        $this->help = false;
+    }
+}
+
+private function defaultExts() : array<string>
+{
+    array<string> $a = array<string>();
+    $a[] = 'VK_KHR_surface';
+    $a[] = 'VK_KHR_swapchain';
+    $a[] = 'VK_KHR_portability_enumeration';
+    $a[] = 'VK_KHR_portability_subset';
+    $a[] = 'VK_EXT_debug_utils';
+    $a[] = 'VK_EXT_metal_surface';
+    $a[] = 'VK_MVK_macos_surface';
+    $a[] = 'VK_KHR_xcb_surface';
+    $a[] = 'VK_KHR_xlib_surface';
+    $a[] = 'VK_KHR_win32_surface';
+
+    return $a;
+}
+
+private function usage() : string
+{
+    return 'libvulkan generate
+  --xml PATH        Khronos registry (default vk.xml)
+  --out PATH        generated module (default src/vk.eco)
+  --api NAME        api to fold (default vulkan)
+  --version X.Y     maximum version (default 1.3)
+  --ext NAME        extra extension, repeatable (defaults already include WSI)
+  --check           regenerate in memory, compare, write nothing
+';
+}
+
+private function parseArgs(const array<string>& $argv) : result<Args, Error>
+{
+    $args = Args();
+    usize $i = 1;
+
+    while ($i < $argv->count()) {
+        $a = $argv[$i];
+
+        if ($a == '--help' || $a == '-h') {
+            $args->help = true;
+            return .ok($args);
+        }
+
+        if ($a == '--check') {
+            $args->check = true;
+            $i = $i + 1;
+            continue;
+        }
+
+        if ($a == '--xml' || $a == '--out' || $a == '--api' || $a == '--version' || $a == '--ext') {
+            if ($i + 1 >= $argv->count()) {
+                return .error(.flagNeedsValue($a));
+            }
+
+            $v = $argv[$i + 1];
+
+            if ($a == '--xml') {
+                $args->xml = $v;
+            } else if ($a == '--out') {
+                $args->out = $v;
+            } else if ($a == '--api') {
+                $args->api = $v;
+            } else if ($a == '--version') {
+                $args->version = $v;
+            } else {
+                $args->exts[] = $v;
+            }
+
+            $i = $i + 2;
+            continue;
+        }
+
+        return .error(.unknownFlag($a));
+    }
+
+    return .ok($args);
+}
+
+private function invocation(const Args& $args) : string
+{
+    $s = "generate --api {$args->api} --version {$args->version}";
+    usize $i = 0;
+
+    while ($i < $args->exts->count()) {
+        $s->append(" --ext {$args->exts[$i]}");
+        $i = $i + 1;
+    }
+
+    return $s;
+}
+
+$argv = std::env::argv();
+$args = guard parseArgs($argv) else ($e) {
+    die($e->message());
+}
+
+if ($args->help) {
+    std::io::print(usage());
+    std::env::exit(0);
+}
+
+int32 $major = 0;
+int32 $minor = 0;
+$ver = reg::parseVersion($args->version, $major, $minor);
+
+if ($ver->failed()) {
+    die($ver->failure()->message());
+}
+
+$xml = guard std::io::readfile($args->xml) else ($e) {
+    die($e->message());
+}
+
+$reg = guard reg::parse($xml) else ($e) {
+    die($e->message());
+}
+
+$folded = guard feat::fold($reg, $args->api, $major, $minor, $args->exts) else ($e) {
+    die($e->message());
+}
+
+$banner = emit::Banner();
+$banner->invocation = invocation($args);
+$banner->api = $args->api;
+$banner->version = $args->version;
+$banner->extensions = $args->exts;
+$banner->registrySha = REGISTRY_SHA;
+
+$em = guard emit::emitModule($folded, $banner, $reg) else ($e) {
+    die($e->message());
+}
+
+if ($args->check) {
+    $have = guard std::io::readfile($args->out) else ($e) {
+        die("{$args->out} is missing or unreadable ({$e->message()}); rerun generate");
+    }
+
+    if ($have != $em->source) {
+        die("{$args->out} is out of date; rerun generate");
+    }
+
+    std::io::println("{$args->out} is up to date");
+    std::env::exit(0);
+}
+
+$wrote = std::io::writefile($args->out, $em->source);
+
+if ($wrote->failed()) {
+    die($wrote->failure()->message());
+}
+
+uint64 $nEnums = $em->nEnums as uint64;
+uint64 $nHandles = $em->nHandles as uint64;
+uint64 $nStructs = $em->nStructs as uint64;
+uint64 $nCommands = $em->nCommands as uint64;
+uint64 $nStubs = $em->nStubs as uint64;
+std::io::println("wrote {$args->out}: {$nEnums} constants, {$nHandles} handles, {$nStructs} structs, {$nCommands} commands, {$nStubs} stubs");

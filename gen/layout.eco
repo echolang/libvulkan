@@ -1,0 +1,279 @@
+/**
+ * C layout sizes for union emission: keep the largest arm, pad to the
+ * union's aligned size. Pointers and handles are 8 bytes (this binding
+ * is 64-bit).
+ */
+
+namespace vkgen::emit;
+
+use vkgen::reg;
+use vkgen::feat;
+use vkgen::types;
+use vkgen::Error;
+
+internal struct SizeAlign
+{
+    public int32 $size;
+    public int32 $align;
+
+    public constructor(int32 $size, int32 $align)
+    {
+        $this->size = $size;
+        $this->align = $align;
+    }
+}
+
+internal function memberArrayN(
+    const feat::Folded& $folded,
+    const reg::Registry& $reg,
+    const types::CDecl& $d,
+    const string& $where
+) : result<int32, Error>
+{
+    if ($d->arrayN > 0) {
+        return .ok($d->arrayN);
+    }
+
+    if ($d->arrayEnum->empty()) {
+        return .ok(0);
+    }
+
+    if ($folded->enumValue->has($d->arrayEnum)) {
+        return .ok($folded->enumValue->get($d->arrayEnum) as int32);
+    }
+
+    if ($reg->enums->has($d->arrayEnum)) {
+        return .ok($reg->enums->get($d->arrayEnum)->value as int32);
+    }
+
+    return .error(.unresolvedArray($where, $d->arrayEnum));
+}
+
+internal function unionMembersToEmit(
+    const feat::Folded& $folded,
+    const reg::Registry& $reg,
+    const reg::TypeDef& $td
+) : result<array<reg::Member>, Error>
+{
+    array<reg::Member> $out = array<reg::Member>();
+
+    if ($td->members->count() == 0) {
+        return .ok($out);
+    }
+
+    int32 $bestI = 0;
+    int32 $bestSize = -1;
+    int32 $maxSize = 0;
+    int32 $maxAlign = 1;
+    usize $m = 0;
+
+    while ($m < $td->members->count()) {
+        $sa = guard declSizeAlign($folded, $reg, $td->members[$m]->decl, $td->name, 0) else ($e) {
+            return .error($e);
+        }
+
+        if ($sa->size > $bestSize) {
+            $bestSize = $sa->size;
+            $bestI = $m as int32;
+        }
+
+        if ($sa->size > $maxSize) {
+            $maxSize = $sa->size;
+        }
+
+        if ($sa->align > $maxAlign) {
+            $maxAlign = $sa->align;
+        }
+
+        $m = $m + 1;
+    }
+
+    $out[] = $td->members[$bestI as usize];
+    int32 $unionSize = alignUp($maxSize, $maxAlign);
+
+    if ($bestSize < $unionSize) {
+        $pad = reg::Member();
+        $pad->decl->base = 'uint8_t';
+        $pad->decl->arrayN = $unionSize - $bestSize;
+        $pad->decl->name = '_unionPad';
+        $out[] = $pad;
+    }
+
+    return .ok($out);
+}
+
+private function declSizeAlign(
+    const feat::Folded& $folded,
+    const reg::Registry& $reg,
+    const types::CDecl& $d,
+    const string& $where,
+    int32 $depth
+) : result<SizeAlign, Error>
+{
+    int32 $arrayN = guard memberArrayN($folded, $reg, $d, $where) else ($e) {
+        return .error($e);
+    }
+
+    if ($d->stars > 0) {
+        int32 $n = 8;
+
+        if ($arrayN > 0) {
+            $n = 8 * $arrayN;
+        }
+
+        return .ok(SizeAlign($n, 8));
+    }
+
+    $elem = guard namedSizeAlign($folded, $reg, $d->base, $where, $depth) else ($e) {
+        return .error($e);
+    }
+
+    if ($arrayN > 0) {
+        $elem->size = $elem->size * $arrayN;
+    }
+
+    return .ok($elem);
+}
+
+private function namedSizeAlign(
+    const feat::Folded& $folded,
+    const reg::Registry& $reg,
+    const string& $name,
+    const string& $where,
+    int32 $depth
+) : result<SizeAlign, Error>
+{
+    if ($depth > 32) {
+        return .error(.context($where, 'type graph too deep to size'));
+    }
+
+    if ($name == 'void') {
+        return .error(.refuseSize($where, $name));
+    }
+
+    $scalar = types::scalarC($name);
+
+    if ($scalar != '') {
+        return .ok(scalarSizeAlign($scalar));
+    }
+
+    $canon = guard reg::resolveTypeName($reg, $name) else ($e) {
+        return .error($e);
+    }
+
+    $handle = guard reg::isHandle($reg, $canon) else ($e) {
+        return .error($e);
+    }
+
+    if ($handle) {
+        return .ok(SizeAlign(8, 8));
+    }
+
+    if (!$reg->types->has($canon)) {
+        return .error(.unknownType($where, $name));
+    }
+
+    $td = $reg->types->get($canon);
+
+    if ($td->kind == reg::TypeKind::structure || $td->kind == reg::TypeKind::union) {
+        return structSizeAlign($folded, $reg, $td, $where, $depth + 1);
+    }
+
+    if ($td->kind == reg::TypeKind::enumeration || $td->kind == reg::TypeKind::bitmask) {
+        if ($canon == 'VkFlags64' || $canon->ends('Flags2') || $canon->ends('FlagBits2')) {
+            return .ok(SizeAlign(8, 8));
+        }
+
+        return .ok(SizeAlign(4, 4));
+    }
+
+    if ($td->kind == reg::TypeKind::funcpointer || $td->kind == reg::TypeKind::basetype || $td->kind == reg::TypeKind::other) {
+        return .ok(SizeAlign(8, 8));
+    }
+
+    return .error(.refuseSize($where, $name));
+}
+
+private function structSizeAlign(
+    const feat::Folded& $folded,
+    const reg::Registry& $reg,
+    const reg::TypeDef& $td,
+    const string& $where,
+    int32 $depth
+) : result<SizeAlign, Error>
+{
+    if ($td->kind == reg::TypeKind::union) {
+        int32 $maxSize = 0;
+        int32 $maxAlign = 1;
+        usize $m = 0;
+
+        while ($m < $td->members->count()) {
+            $sa = guard declSizeAlign($folded, $reg, $td->members[$m]->decl, $td->name, $depth) else ($e) {
+                return .error($e);
+            }
+
+            if ($sa->size > $maxSize) {
+                $maxSize = $sa->size;
+            }
+
+            if ($sa->align > $maxAlign) {
+                $maxAlign = $sa->align;
+            }
+
+            $m = $m + 1;
+        }
+
+        return .ok(SizeAlign(alignUp($maxSize, $maxAlign), $maxAlign));
+    }
+
+    int32 $off = 0;
+    int32 $maxAlign = 1;
+    usize $m = 0;
+
+    while ($m < $td->members->count()) {
+        $sa = guard declSizeAlign($folded, $reg, $td->members[$m]->decl, $td->name, $depth) else ($e) {
+            return .error($e);
+        }
+
+        $off = alignUp($off, $sa->align);
+        $off = $off + $sa->size;
+
+        if ($sa->align > $maxAlign) {
+            $maxAlign = $sa->align;
+        }
+
+        $m = $m + 1;
+    }
+
+    return .ok(SizeAlign(alignUp($off, $maxAlign), $maxAlign));
+}
+
+private function scalarSizeAlign(const string& $echo) : SizeAlign
+{
+    if ($echo == 'uint8' || $echo == 'int8') {
+        return SizeAlign(1, 1);
+    }
+
+    if ($echo == 'uint16' || $echo == 'int16') {
+        return SizeAlign(2, 2);
+    }
+
+    if ($echo == 'uint32' || $echo == 'int32' || $echo == 'float32') {
+        return SizeAlign(4, 4);
+    }
+
+    if ($echo == 'uint64' || $echo == 'int64' || $echo == 'float64' || $echo == 'usize') {
+        return SizeAlign(8, 8);
+    }
+
+    return SizeAlign(4, 4);
+}
+
+private function alignUp(int32 $n, int32 $a) : int32
+{
+    if ($a <= 1) {
+        return $n;
+    }
+
+    return (($n + $a - 1) / $a) * $a;
+}

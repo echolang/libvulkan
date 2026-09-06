@@ -1,0 +1,70 @@
+/*
+ * GLFW window, no OpenGL, Vulkan swapchain clear.
+ *
+ *   echoc run --target clear -- --frames 120
+ */
+
+int32 $frames = guard parseFrames(std::env::argv()) else ($e) {
+    die($e);
+}
+
+if (!vk::available()) {
+    die('no Vulkan ICD (on macOS: brew install molten-vk, or a Vulkan SDK)');
+}
+
+if (vk::loadDefault() == 0) {
+    die('vk::loadDefault resolved nothing');
+}
+
+glfw::initVulkanLoader(vk::getInstanceProcAddrPtr());
+
+if (glfw::init() != glfw::TRUE) {
+    die(glfw::error_message());
+}
+
+glfw::windowHint(glfw::CLIENT_API, glfw::NO_API);
+
+ptr<glfw::Window> $window = glfw::createWindow(800, 600, 'libvulkan', null, null);
+
+if ($window:$ == null) {
+    glfw::terminate();
+    die(glfw::error_message());
+}
+
+Context $g = boot($window);
+
+vk::ClearValue $clear = vk::ClearValue();
+$clear->color->float32[0] = 0.25f;
+$clear->color->float32[1] = 0.25f;
+$clear->color->float32[2] = 0.25f;
+$clear->color->float32[3] = 1.0f;
+
+int32 $frame = 0;
+
+while ($frame < $frames && glfw::windowShouldClose($window) == glfw::FALSE) {
+    uint32 $index = acquire($g);
+    dieVk(vk::ResetCommandBuffer($g->cmd, 0), 'ResetCommandBuffer');
+
+    vk::CommandBufferBeginInfo $begin = vk::CommandBufferBeginInfo();
+    $begin->flags = vk::COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    dieVk(vk::BeginCommandBuffer($g->cmd, &$begin), 'BeginCommandBuffer');
+
+    vk::RenderPassBeginInfo $rp = vk::RenderPassBeginInfo();
+    $rp->renderPass = $g->pass;
+    $rp->framebuffer = $g->framebuffers[$index];
+    $rp->renderArea->offset = vk::Offset2D(0, 0);
+    $rp->renderArea->extent = $g->extent;
+    $rp->clearValueCount = 1;
+    $rp->pClearValues:$ = &$clear;
+    vk::CmdBeginRenderPass($g->cmd, &$rp, vk::SUBPASS_CONTENTS_INLINE);
+    vk::CmdEndRenderPass($g->cmd);
+    dieVk(vk::EndCommandBuffer($g->cmd), 'EndCommandBuffer');
+
+    submit($g, $index);
+    glfw::pollEvents();
+    $frame = $frame + 1;
+}
+
+shutdown($g);
+glfw::destroyWindow($window);
+glfw::terminate();

@@ -1,0 +1,381 @@
+/**
+ * a toy registry through parse, fold, and emit
+ */
+
+internal function toyXml() : string
+{
+    $s = '<?xml version="1.0"?>';
+    $s->append('<registry>');
+    $s->append('<comment>ignored</comment>');
+    $s->append('<types>');
+    $s->append('<type category="handle"><type>VK_DEFINE_HANDLE</type>(<name>VkInstance</name>)</type>');
+    $s->append('<type category="handle"><type>VK_DEFINE_HANDLE</type>(<name>VkDevice</name>)</type>');
+    $s->append('<type category="handle"><type>VK_DEFINE_NON_DISPATCHABLE_HANDLE</type>(<name>VkBuffer</name>)</type>');
+    $s->append('<type category="enum" name="VkResult"/>');
+    $s->append('<type category="enum" name="VkStructureType"/>');
+    $s->append('<type category="struct" name="VkExtent2D">');
+    $s->append('<member><type>uint32_t</type> <name>width</name></member>');
+    $s->append('<member><type>uint32_t</type> <name>height</name></member>');
+    $s->append('</type>');
+    $s->append('<type category="struct" name="VkApplicationInfo">');
+    $s->append('<member values="VK_STRUCTURE_TYPE_APPLICATION_INFO"><type>VkStructureType</type> <name>sType</name></member>');
+    $s->append('<member>const <type>void</type>* <name>pNext</name></member>');
+    $s->append('<member><type>char</type> <name>extensionName</name>[<enum>VK_MAX_EXTENSION_NAME_SIZE</enum>]</member>');
+    $s->append('</type>');
+    $s->append('<type category="union" name="VkClearColorValue">');
+    $s->append('<member><type>float</type> <name>float32</name>[4]</member>');
+    $s->append('<member><type>int32_t</type> <name>int32</name>[4]</member>');
+    $s->append('</type>');
+    $s->append('<type category="union" name="VkWideSecond">');
+    $s->append('<member><type>uint32_t</type> <name>small</name></member>');
+    $s->append('<member><type>uint64_t</type> <name>big</name></member>');
+    $s->append('</type>');
+    $s->append('<type category="union" name="VkOddPad">');
+    $s->append('<member><type>uint8_t</type> <name>bytes</name>[5]</member>');
+    $s->append('<member><type>uint32_t</type> <name>word</name></member>');
+    $s->append('</type>');
+    $s->append('<type category="struct" name="VkInstanceCreateInfo">');
+    $s->append('<member values="VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO"><type>VkStructureType</type> <name>sType</name></member>');
+    $s->append('</type>');
+    $s->append('<type category="struct" name="VkAllocationCallbacks">');
+    $s->append('<member>const <type>void</type>* <name>pUserData</name></member>');
+    $s->append('</type>');
+    $s->append('</types>');
+    $s->append('<enums name="API Constants">');
+    $s->append('<enum value="256" name="VK_MAX_EXTENSION_NAME_SIZE"/>');
+    $s->append('<enum value="1" name="VK_TRUE"/>');
+    $s->append('<enum alias="VK_TRUE" name="VK_TRUE_ALIAS"/>');
+    $s->append('</enums>');
+    $s->append('<enums name="VkResult" type="enum">');
+    $s->append('<enum value="0" name="VK_SUCCESS"/>');
+    $s->append('<enum value="-1" name="VK_ERROR_OUT_OF_HOST_MEMORY"/>');
+    $s->append('</enums>');
+    $s->append('<enums name="VkStructureType" type="enum">');
+    $s->append('<enum value="0" name="VK_STRUCTURE_TYPE_APPLICATION_INFO"/>');
+    $s->append('<enum value="1" name="VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO"/>');
+    $s->append('</enums>');
+    $s->append('<enums name="VkPipelineCreateFlagBits" type="bitmask">');
+    $s->append('<enum bitpos="0" name="VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT"/>');
+    $s->append('</enums>');
+    $s->append('<commands>');
+    $s->append('<command>');
+    $s->append('<proto><type>VkResult</type> <name>vkCreateInstance</name></proto>');
+    $s->append('<param>const <type>VkInstanceCreateInfo</type>* <name>pCreateInfo</name></param>');
+    $s->append('<param>const <type>VkAllocationCallbacks</type>* <name>pAllocator</name></param>');
+    $s->append('<param><type>VkInstance</type>* <name>pInstance</name></param>');
+    $s->append('</command>');
+    $s->append('<command>');
+    $s->append('<proto>void <name>vkDestroyInstance</name></proto>');
+    $s->append('<param><type>VkInstance</type> <name>instance</name></param>');
+    $s->append('<param>const <type>VkAllocationCallbacks</type>* <name>pAllocator</name></param>');
+    $s->append('</command>');
+    $s->append('<command>');
+    $s->append('<proto>void <name>vkDestroyDevice</name></proto>');
+    $s->append('<param><type>VkDevice</type> <name>device</name></param>');
+    $s->append('<param>const <type>VkAllocationCallbacks</type>* <name>pAllocator</name></param>');
+    $s->append('</command>');
+    $s->append('<command>');
+    $s->append('<proto>void <name>vkOnlyIn11</name></proto>');
+    $s->append('<param><type>VkInstance</type> <name>instance</name></param>');
+    $s->append('</command>');
+    $s->append('</commands>');
+    $s->append('<feature api="vulkan" name="VK_VERSION_1_0" number="1.0">');
+    $s->append('<require>');
+    $s->append('<type name="VkInstance"/>');
+    $s->append('<type name="VkDevice"/>');
+    $s->append('<type name="VkBuffer"/>');
+    $s->append('<type name="VkExtent2D"/>');
+    $s->append('<type name="VkApplicationInfo"/>');
+    $s->append('<type name="VkInstanceCreateInfo"/>');
+    $s->append('<type name="VkAllocationCallbacks"/>');
+    $s->append('<type name="VkClearColorValue"/>');
+    $s->append('<type name="VkWideSecond"/>');
+    $s->append('<type name="VkOddPad"/>');
+    $s->append('<type name="VkResult"/>');
+    $s->append('<enum name="VK_SUCCESS"/>');
+    $s->append('<enum name="VK_ERROR_OUT_OF_HOST_MEMORY"/>');
+    $s->append('<enum name="VK_MAX_EXTENSION_NAME_SIZE"/>');
+    $s->append('<enum name="VK_TRUE"/>');
+    $s->append('<enum name="VK_TRUE_ALIAS"/>');
+    $s->append('<enum name="VK_STRUCTURE_TYPE_APPLICATION_INFO"/>');
+    $s->append('<enum name="VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO"/>');
+    $s->append('<enum name="VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT"/>');
+    $s->append('<command name="vkCreateInstance"/>');
+    $s->append('<command name="vkDestroyInstance"/>');
+    $s->append('<command name="vkDestroyDevice"/>');
+    $s->append('</require>');
+    $s->append('</feature>');
+    $s->append('<feature api="vulkan" name="VK_VERSION_1_1" number="1.1">');
+    $s->append('<require>');
+    $s->append('<command name="vkOnlyIn11"/>');
+    $s->append('</require>');
+    $s->append('</feature>');
+    $s->append('<extensions>');
+    $s->append('<extension name="VK_KHR_surface" number="1" supported="vulkan">');
+    $s->append('<require>');
+    $s->append('<enum offset="0" extends="VkResult" name="VK_ERROR_SURFACE_LOST_KHR" dir="-"/>');
+    $s->append('</require>');
+    $s->append('</extension>');
+    $s->append('<extension name="VK_KHR_video" number="2" supported="vulkansc">');
+    $s->append('<require/>');
+    $s->append('</extension>');
+    $s->append('</extensions>');
+    $s->append('</registry>');
+
+    return $s;
+}
+
+internal function toyReg() : vkgen::reg::Registry
+{
+    vkgen::reg::Registry $reg = guard vkgen::reg::parse(toyXml()) else ($e) {
+        die($e->message());
+    }
+
+    return $reg;
+}
+
+internal function toyFold(int32 $minor, const array<string>& $exts) : vkgen::feat::Folded
+{
+    $reg = toyReg();
+    vkgen::feat::Folded $folded = guard vkgen::feat::fold($reg, 'vulkan', 1, $minor, $exts) else ($e) {
+        die($e->message());
+    }
+
+    return $folded;
+}
+
+internal function hasCommand(const vkgen::feat::Folded& $f, const string& $name) : bool
+{
+    usize $i = 0;
+
+    while ($i < $f->commands->count()) {
+        if ($f->commands[$i]->name == $name) {
+            return true;
+        }
+
+        $i = $i + 1;
+    }
+
+    return false;
+}
+
+internal function hasEnum(const vkgen::feat::Folded& $f, const string& $name) : bool
+{
+    usize $i = 0;
+
+    while ($i < $f->enums->count()) {
+        if ($f->enums[$i]->name == $name) {
+            return true;
+        }
+
+        $i = $i + 1;
+    }
+
+    return false;
+}
+
+internal function commandNamed(const vkgen::feat::Folded& $f, const string& $name) : vkgen::reg::Command
+{
+    usize $i = 0;
+
+    while ($i < $f->commands->count()) {
+        if ($f->commands[$i]->name == $name) {
+            return $f->commands[$i];
+        }
+
+        $i = $i + 1;
+    }
+
+    die("missing command {$name}");
+}
+
+test parse_rejects_empty_and_wrong_root
+{
+    $empty = vkgen::reg::parse('');
+    assert($empty->failed());
+
+    $wrong = vkgen::reg::parse('<foo/>');
+    assert($wrong->failed());
+}
+
+test parse_toy_registry
+{
+    $reg = toyReg();
+
+    assert($reg->types->has('VkInstance'));
+    assert($reg->types->has('VkBuffer'));
+    assert($reg->types->get('VkInstance')->kind == vkgen::reg::TypeKind::handle);
+    assert($reg->types->get('VkInstance')->dispatchable);
+    assert(!$reg->types->get('VkBuffer')->dispatchable);
+    assert($reg->types->get('VkExtent2D')->kind == vkgen::reg::TypeKind::structure);
+    assert($reg->types->get('VkClearColorValue')->kind == vkgen::reg::TypeKind::union);
+    assert($reg->types->get('VkClearColorValue')->members->count() == 2);
+
+    assert($reg->enums->has('VK_SUCCESS'));
+    assert($reg->enums->get('VK_SUCCESS')->kind == vkgen::reg::EnumKind::i32);
+    assert($reg->enums->get('VK_ERROR_SURFACE_LOST_KHR')->extends == 'VkResult');
+    assert($reg->enums->get('VK_TRUE_ALIAS')->resolved);
+    assert($reg->enums->get('VK_TRUE_ALIAS')->value == 1);
+    assert($reg->enums->get('VK_PIPELINE_CREATE_DISABLE_OPTIMIZATION_BIT')->value == 1);
+
+    assert($reg->commands->has('vkCreateInstance'));
+    assert($reg->commands->get('vkCreateInstance')->level == vkgen::reg::CmdLevel::global);
+    assert($reg->commands->get('vkDestroyInstance')->level == vkgen::reg::CmdLevel::instance);
+    assert($reg->commands->get('vkDestroyDevice')->level == vkgen::reg::CmdLevel::device);
+
+    assert($reg->features->count() == 2);
+    assert($reg->extensions->has('VK_KHR_surface'));
+}
+
+test classify_special_and_first_arg
+{
+    $gipa = vkgen::reg::Command();
+    $gipa->name = 'vkGetInstanceProcAddr';
+    assert(vkgen::reg::classify($gipa) == vkgen::reg::CmdLevel::global);
+
+    $gdpa = vkgen::reg::Command();
+    $gdpa->name = 'vkGetDeviceProcAddr';
+    assert(vkgen::reg::classify($gdpa) == vkgen::reg::CmdLevel::instance);
+
+    $none = vkgen::reg::Command();
+    $none->name = 'vkEnumerateInstanceVersion';
+    assert(vkgen::reg::classify($none) == vkgen::reg::CmdLevel::global);
+
+    $phys = vkgen::reg::Command();
+    $phys->name = 'vkGetPhysicalDeviceProperties';
+    $d = vkgen::types::CDecl();
+    $d->base = 'VkPhysicalDevice';
+    $phys->argDecls[] = $d;
+    assert(vkgen::reg::classify($phys) == vkgen::reg::CmdLevel::instance);
+
+    $q = vkgen::reg::Command();
+    $q->name = 'vkQueueSubmit';
+    $qd = vkgen::types::CDecl();
+    $qd->base = 'VkQueue';
+    $q->argDecls[] = $qd;
+    assert(vkgen::reg::classify($q) == vkgen::reg::CmdLevel::device);
+}
+
+test fold_version_and_extension
+{
+    array<string> $none = array<string>();
+    $v10 = toyFold(0, $none);
+
+    assert(hasCommand($v10, 'vkCreateInstance'));
+    assert(hasCommand($v10, 'vkDestroyInstance'));
+    assert(hasCommand($v10, 'vkDestroyDevice'));
+    assert(!hasCommand($v10, 'vkOnlyIn11'));
+    assert(!hasEnum($v10, 'VK_ERROR_SURFACE_LOST_KHR'));
+    assert($v10->handles->count() == 3);
+    assert($v10->structs->count() == 7);
+
+    $v11 = toyFold(1, $none);
+    assert(hasCommand($v11, 'vkOnlyIn11'));
+
+    array<string> $exts = array<string>();
+    $exts[] = 'VK_KHR_surface';
+    $surf = toyFold(0, $exts);
+    assert(hasEnum($surf, 'VK_ERROR_SURFACE_LOST_KHR'));
+}
+
+test fold_rejects_unknown_and_wrong_api_ext
+{
+    $reg = toyReg();
+    array<string> $bad = array<string>();
+    $bad[] = 'VK_DOES_NOT_EXIST';
+    assert(vkgen::feat::fold($reg, 'vulkan', 1, 0, $bad)->failed());
+
+    array<string> $sc = array<string>();
+    $sc[] = 'VK_KHR_video';
+    assert(vkgen::feat::fold($reg, 'vulkan', 1, 0, $sc)->failed());
+}
+
+test fold_command_levels_and_handle_by_value
+{
+    array<string> $none = array<string>();
+    $f = toyFold(0, $none);
+
+    $create = commandNamed($f, 'vkCreateInstance');
+    assert($create->level == vkgen::reg::CmdLevel::global);
+    assert($create->retEcho == 'Result');
+    assert($create->retExtern == 'int32');
+    assert($create->params->count() == 3);
+    assert(!$create->params[2]->handleByValue);
+    assert($create->params[2]->echoType == 'ptr<Instance>');
+
+    $destroy = commandNamed($f, 'vkDestroyInstance');
+    assert($destroy->level == vkgen::reg::CmdLevel::instance);
+    assert($destroy->params[0]->handleByValue);
+    assert($destroy->params[0]->echoType == 'Instance');
+    assert($destroy->params[0]->externType == 'uint64');
+}
+
+test emit_toy_module
+{
+    array<string> $none = array<string>();
+    $reg = toyReg();
+    $f = toyFold(0, $none);
+    $banner = vkgen::emit::Banner();
+    $banner->invocation = 'generate --api vulkan --version 1.0';
+    $banner->api = 'vulkan';
+    $banner->version = '1.0';
+    $banner->registrySha = 'test';
+
+    $em = guard vkgen::emit::emitModule($f, $banner, $reg) else ($e) {
+        die($e->message());
+    }
+
+    assert($em->nHandles == 3);
+    assert($em->nStructs == 7);
+    assert($em->nCommands == 3);
+    assert($em->source->contains('namespace vk;'));
+    assert($em->source->contains('public const int32 SUCCESS = 0;'));
+    assert($em->source->contains('public enum Result : int32'));
+    assert($em->source->contains('case success = 0;'));
+    assert($em->source->contains('case errorOutOfHostMemory = -1;'));
+    assert($em->source->contains('case other;'));
+    assert($em->source->contains('return Result::from('));
+    assert($em->source->contains('public const int32 ERROR_OUT_OF_HOST_MEMORY = -1;'));
+    assert($em->source->contains('public const uint32 TRUE_ALIAS'));
+    assert($em->source->contains('public struct Instance'));
+    assert($em->source->contains('public static function none() : Instance'));
+    assert($em->source->contains('public uint8[256] $extensionName;'));
+    assert($em->source->contains('public uint32 $sType = STRUCTURE_TYPE_APPLICATION_INFO;'));
+    assert($em->source->contains('public float32[4] $float32;'));
+    assert(!$em->source->contains('$int32;'));
+    assert($em->source->contains('public uint64 $big = 0;'));
+    assert(!$em->source->contains('$small;'));
+    assert($em->source->contains('public uint8[5] $bytes;'));
+    assert($em->source->contains('public uint8[3] $_unionPad;'));
+    assert(!$em->source->contains('$word;'));
+    assert($em->source->contains('public ptr<const uint8> $pNext;'));
+    assert($em->source->contains('public function CreateInstance('));
+    assert($em->source->contains('public function DestroyInstance('));
+    assert($em->source->contains('public function DestroyDevice('));
+    assert(!$em->source->contains('OnlyIn11'));
+    assert($em->source->contains("die('vk: entry point called before vk::load, or unavailable in this ICD')"));
+}
+
+test is_handle_and_resolve
+{
+    $reg = toyReg();
+    $h = guard vkgen::reg::isHandle($reg, 'VkInstance') else ($e) {
+        die($e->message());
+    }
+    assert($h);
+
+    $s = guard vkgen::reg::isHandle($reg, 'VkExtent2D') else ($e) {
+        die($e->message());
+    }
+    assert(!$s);
+
+    $st = guard vkgen::reg::isStructish($reg, 'VkClearColorValue') else ($e) {
+        die($e->message());
+    }
+    assert($st);
+
+    $canon = guard vkgen::reg::resolveTypeName($reg, 'VkInstance') else ($e) {
+        die($e->message());
+    }
+    assert($canon == 'VkInstance');
+}

@@ -1,0 +1,24 @@
+/**
+ * Opening an ICD is a machine fact, not an API fact. The function is
+ * defined everywhere; the result is true on this Mac when MoltenVK or
+ * a Vulkan loader is on the dlopen path.
+ */
+
+test available_is_defined
+{
+    bool $a = vk::available();
+
+    assert($a == true || $a == false);
+}
+
+test get_instance_proc_addr_ptr_tracks_available
+{
+    bool $a = vk::available();
+    ptr<uint8> $p = vk::getInstanceProcAddrPtr();
+
+    if ($a) {
+        assert($p:$ != null);
+    } else {
+        assert($p:$ == null);
+    }
+}

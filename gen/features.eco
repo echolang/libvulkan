@@ -1,0 +1,489 @@
+/**
+ * feature / extension fold
+ *
+ * walks features whose number is at most the requested version and whose
+ * api lists vulkan, then each --ext. require sets add enums, types and
+ * commands. defined enum values from extension blocks are merged in.
+ * struct members pull their element types in (closure). sorted name order
+ * is the one canonical order for everything emit writes
+ */
+
+namespace vkgen::feat;
+
+use vkgen::reg;
+use vkgen::types;
+use vkgen::Error;
+
+public struct Folded
+{
+    public array<reg::EnumDef> $enums;
+    public array<reg::Command> $commands;
+    public array<reg::TypeDef> $handles;
+    public array<reg::TypeDef> $structs;
+    public ordered_map<string, uint64> $enumValue;
+    public ordered_map<string, string> $echoTypeName;
+    public map<string, bool> $handleEcho;
+
+    public constructor()
+    {
+        $this->enums = array<reg::EnumDef>();
+        $this->commands = array<reg::Command>();
+        $this->handles = array<reg::TypeDef>();
+        $this->structs = array<reg::TypeDef>();
+        $this->enumValue = ordered_map<string, uint64>();
+        $this->echoTypeName = ordered_map<string, string>();
+        $this->handleEcho = map<string, bool>();
+    }
+}
+
+public function fold(
+    const reg::Registry& $reg,
+    const string& $api,
+    int32 $major,
+    int32 $minor,
+    const array<string>& $exts
+) : result<Folded, Error>
+{
+    $enumSet = map<string, bool>();
+    $cmdSet = map<string, bool>();
+    $typeSet = map<string, bool>();
+    $defined = ordered_map<string, reg::EnumDef>();
+
+    usize $i = 0;
+
+    while ($i < $reg->features->count()) {
+        $f = $reg->features[$i];
+
+        if (reg::apiAllows($f->api, $api) && versionLe($f->major, $f->minor, $major, $minor)) {
+            applySets($f->requires, $api, $enumSet, $cmdSet, $typeSet, $defined);
+        }
+
+        $i = $i + 1;
+    }
+
+    usize $e = 0;
+
+    while ($e < $exts->count()) {
+        $name = $exts[$e];
+
+        if (!$reg->extensions->has($name)) {
+            return .error(.unknownExtension($name));
+        }
+
+        $ext = $reg->extensions->get($name);
+
+        if (!reg::apiAllows($ext->supported, $api)) {
+            return .error(.extensionApi($name, $api, $ext->supported));
+        }
+
+        applySets($ext->requires, $api, $enumSet, $cmdSet, $typeSet, $defined);
+        $e = $e + 1;
+    }
+
+    $closed = closeTypes($reg, $typeSet);
+
+    if ($closed->failed()) {
+        return .error($closed->failure());
+    }
+
+    $byGroup = enumsByGroup($reg);
+
+    foreach ($typeSet as $name => $keep) {
+        if (!$keep) {
+            continue;
+        }
+
+        $canon = guard reg::resolveTypeName($reg, $name) else ($e) {
+            return .error($e);
+        }
+
+        if (!$reg->types->has($canon)) {
+            continue;
+        }
+
+        $td = $reg->types->get($canon);
+
+        if ($td->kind == reg::TypeKind::enumeration || $td->kind == reg::TypeKind::bitmask) {
+            addGroupEnums($enumSet, $byGroup, $canon);
+
+            if ($name != $canon) {
+                addGroupEnums($enumSet, $byGroup, $name);
+            }
+        }
+    }
+
+    $out = Folded();
+
+    foreach ($defined as $name => $def) {
+        if ($reg->enums->has($name)) {
+            $out->enumValue[$name] = $reg->enums->get($name)->value;
+        } else {
+            $out->enumValue[$name] = $def->value;
+        }
+    }
+
+    foreach ($enumSet as $name => $keep) {
+        if (!$keep) {
+            continue;
+        }
+
+        if ($defined->has($name)) {
+            $d = $defined->get($name);
+
+            if ($reg->enums->has($name)) {
+                $d = $reg->enums->get($name);
+            }
+
+            $out->enums[] = $d;
+            $out->enumValue[$name] = $d->value;
+            continue;
+        }
+
+        if (!$reg->enums->has($name)) {
+            continue;
+        }
+
+        $d = $reg->enums->get($name);
+        $out->enums[] = $d;
+        $out->enumValue[$name] = $d->value;
+    }
+
+    foreach ($cmdSet as $name => $keep) {
+        if (!$keep) {
+            continue;
+        }
+
+        string $canon = $name;
+
+        if ($reg->commands->has($name) && !$reg->commands->get($name)->alias->empty()) {
+            $canon = $reg->commands->get($name)->alias;
+        }
+
+        if (!$reg->commands->has($canon)) {
+            return .error(.missingCommand($name));
+        }
+
+        $out->commands[] = $reg->commands->get($canon);
+    }
+
+    foreach ($typeSet as $name => $keep) {
+        if (!$keep) {
+            continue;
+        }
+
+        $canon = guard reg::resolveTypeName($reg, $name) else ($err) {
+            return .error($err);
+        }
+
+        if (!$reg->types->has($canon)) {
+            continue;
+        }
+
+        $td = $reg->types->get($canon);
+
+        if ($td->kind == reg::TypeKind::handle) {
+            $out->handles[] = $td;
+        } else if ($td->kind == reg::TypeKind::structure || $td->kind == reg::TypeKind::union) {
+            $out->structs[] = $td;
+        }
+    }
+
+    dedupeNamed<reg::TypeDef>($out->handles);
+    dedupeNamed<reg::TypeDef>($out->structs);
+    dedupeNamed<reg::Command>($out->commands);
+
+    $names = guard bindNames($out) else ($err) {
+        return .error($err);
+    }
+
+    $bound = bindAll($reg, $out);
+
+    if ($bound->failed()) {
+        return .error($bound->failure());
+    }
+
+    sortNamed<reg::EnumDef>($out->enums);
+    sortNamed<reg::Command>($out->commands);
+    sortNamed<reg::TypeDef>($out->handles);
+    sortNamed<reg::TypeDef>($out->structs);
+
+    return .ok($out);
+}
+
+private function applySets(
+    const array<reg::RequireSet>& $sets,
+    const string& $api,
+    map<string, bool>& $enumSet,
+    map<string, bool>& $cmdSet,
+    map<string, bool>& $typeSet,
+    ordered_map<string, reg::EnumDef>& $defined
+) : void
+{
+    usize $i = 0;
+
+    while ($i < $sets->count()) {
+        $set = $sets[$i];
+
+        if (!reg::apiAllows($set->api, $api)) {
+            $i = $i + 1;
+            continue;
+        }
+
+        usize $n = 0;
+
+        while ($n < $set->enums->count()) {
+            $enumSet[$set->enums[$n]] = true;
+            $n = $n + 1;
+        }
+
+        $n = 0;
+
+        while ($n < $set->commands->count()) {
+            $cmdSet[$set->commands[$n]] = true;
+            $n = $n + 1;
+        }
+
+        $n = 0;
+
+        while ($n < $set->types->count()) {
+            $typeSet[$set->types[$n]] = true;
+            $n = $n + 1;
+        }
+
+        $n = 0;
+
+        while ($n < $set->definedEnums->count()) {
+            $d = $set->definedEnums[$n];
+            $defined[$d->name] = $d;
+            $enumSet[$d->name] = true;
+            $n = $n + 1;
+        }
+
+        $i = $i + 1;
+    }
+}
+
+private function closeTypes(const reg::Registry& $reg, map<string, bool>& $typeSet) : result<bool, Error>
+{
+    bool $changed = true;
+    int32 $guard = 0;
+
+    while ($changed && $guard < 32) {
+        $changed = false;
+        $guard = $guard + 1;
+        array<string> $names = array<string>();
+
+        foreach ($typeSet as $name => $keep) {
+            if ($keep) {
+                $names[] = $name;
+            }
+        }
+
+        usize $i = 0;
+
+        while ($i < $names->count()) {
+            $canon = guard reg::resolveTypeName($reg, $names[$i]) else ($e) {
+                return .error($e);
+            }
+
+            if (!$reg->types->has($canon)) {
+                $i = $i + 1;
+                continue;
+            }
+
+            $td = $reg->types->get($canon);
+            usize $m = 0;
+
+            while ($m < $td->members->count()) {
+                $base = $td->members[$m]->decl->base;
+                string $voidName = 'void';
+                string $charName = 'char';
+
+                if ($base->empty() || $base == $voidName || $base == $charName) {
+                    $m = $m + 1;
+                    continue;
+                }
+
+                if (types::scalarC($base) != '') {
+                    $m = $m + 1;
+                    continue;
+                }
+
+                if (!$typeSet->has($base)) {
+                    $typeSet[$base] = true;
+                    $changed = true;
+                }
+
+                $m = $m + 1;
+            }
+
+            $i = $i + 1;
+        }
+    }
+
+    if ($changed) {
+        return .error(.context('types', 'type graph did not close'));
+    }
+
+    return .ok(true);
+}
+
+private function bindNames(Folded& $out) : result<bool, Error>
+{
+    usize $i = 0;
+
+    while ($i < $out->handles->count()) {
+        $vk = $out->handles[$i]->name;
+        $echo = guard stripType($vk) else ($e) {
+            return .error($e);
+        }
+
+        if ($out->echoTypeName->has($echo)) {
+            return .error(.nameCollision('type', $echo, $out->echoTypeName->get($echo), $vk));
+        }
+
+        $out->echoTypeName[$echo] = $vk;
+        $out->handleEcho[$echo] = true;
+        $i = $i + 1;
+    }
+
+    $i = 0;
+
+    while ($i < $out->structs->count()) {
+        $vk = $out->structs[$i]->name;
+        $echo = guard stripType($vk) else ($e) {
+            return .error($e);
+        }
+
+        if ($out->echoTypeName->has($echo)) {
+            return .error(.nameCollision('type', $echo, $out->echoTypeName->get($echo), $vk));
+        }
+
+        $out->echoTypeName[$echo] = $vk;
+        $i = $i + 1;
+    }
+
+    return .ok(true);
+}
+
+private function versionLe(int32 $aMaj, int32 $aMin, int32 $bMaj, int32 $bMin) : bool
+{
+    if ($aMaj < $bMaj) {
+        return true;
+    }
+
+    if ($aMaj > $bMaj) {
+        return false;
+    }
+
+    return $aMin <= $bMin;
+}
+
+public function lessBytes(const string& $a, const string& $b) : bool
+{
+    usize $n = $a->size();
+
+    if ($b->size() < $n) {
+        $n = $b->size();
+    }
+
+    usize $i = 0;
+
+    while ($i < $n) {
+        uint8 $ca = $a->byte($i);
+        uint8 $cb = $b->byte($i);
+
+        if ($ca != $cb) {
+            return $ca < $cb;
+        }
+
+        $i = $i + 1;
+    }
+
+    return $a->size() < $b->size();
+}
+
+private function enumsByGroup(const reg::Registry& $reg) : map<string, array<string>>
+{
+    $by = map<string, array<string>>();
+
+    foreach ($reg->enums as $ename => $edef) {
+        if ($edef->group->empty()) {
+            continue;
+        }
+
+        if (!$by->has($edef->group)) {
+            $by[$edef->group] = array<string>();
+        }
+
+        array<string> $list = $by->get($edef->group);
+        $list[] = $ename;
+        $by[$edef->group] = $list;
+    }
+
+    return $by;
+}
+
+private function addGroupEnums(
+    map<string, bool>& $enumSet,
+    const map<string, array<string>>& $byGroup,
+    const string& $group
+) : void
+{
+    if (!$byGroup->has($group)) {
+        return;
+    }
+
+    array<string> $names = $byGroup->get($group);
+
+    foreach ($names as $ename) {
+        $enumSet[$ename] = true;
+    }
+}
+
+private function sortNamed<T: reg::Named>(array<T>& $items) : void
+{
+    usize $n = $items->count();
+    usize $i = 1;
+
+    while ($i < $n) {
+        $key = $items[$i];
+        string $keyName = $key->named();
+        usize $j = $i;
+
+        while ($j > 0) {
+            $prev = $items[$j - 1];
+
+            if (!lessBytes($keyName, $prev->named())) {
+                break;
+            }
+
+            $items[$j] = $prev;
+            $j = $j - 1;
+        }
+
+        $items[$j] = $key;
+        $i = $i + 1;
+    }
+}
+
+private function dedupeNamed<T: reg::Named>(array<T>& $items) : void
+{
+    ordered_map<string, bool> $seen = ordered_map<string, bool>();
+    array<T> $keep = array<T>();
+    usize $i = 0;
+
+    while ($i < $items->count()) {
+        $item = $items[$i];
+        $n = $item->named();
+
+        if (!$seen->has($n)) {
+            $seen[$n] = true;
+            $keep[] = $item;
+        }
+
+        $i = $i + 1;
+    }
+
+    $items = $keep;
+}

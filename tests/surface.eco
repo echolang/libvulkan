@@ -1,0 +1,128 @@
+/**
+ * Spot-check the committed generated surface. Each test is a fresh process,
+ * so load cannot leak into the next one.
+ */
+
+private function sentinelCreateInstance(
+    ptr<const vk::InstanceCreateInfo> $info,
+    ptr<const vk::AllocationCallbacks> $alloc,
+    ptr<vk::Instance> $out
+) : int32
+{
+    return 7;
+}
+
+private function fakeGetproc(ptr<const uint8> $name) : ptr<uint8>
+{
+    $s = str::from($name);
+
+    if ($s == 'vkCreateInstance') {
+        unsafe {
+            return &sentinelCreateInstance as ptr<uint8>;
+        }
+    }
+
+    return null;
+}
+
+test constants
+{
+    assert(vk::SUCCESS == 0);
+    assert(vk::TRUE == 1);
+    assert(vk::FALSE == 0);
+    assert(vk::UUID_SIZE == 16);
+    assert(vk::STRUCTURE_TYPE_APPLICATION_INFO == 0);
+    assert(vk::INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR == 1);
+    assert(vk::PIPELINE_CREATE_DISPATCH_BASE == vk::PIPELINE_CREATE_DISPATCH_BASE_BIT);
+}
+
+test layout
+{
+    assert(mem::size<vk::Offset2D>() == 8);
+    assert(mem::size<vk::Extent2D>() == 8);
+    assert(mem::size<vk::Extent3D>() == 12);
+    assert(mem::size<vk::ApplicationInfo>() == 48);
+    assert(mem::size<vk::Instance>() == 8);
+    assert(mem::size<vk::ExtensionProperties>() == 260);
+}
+
+test inline_array
+{
+    vk::ExtensionProperties $e = vk::ExtensionProperties();
+    $e->extensionName[0] = 65;
+    $e->extensionName[1] = 0;
+    assert($e->extensionName[0] == 65);
+    ptr<uint8> $p = &$e->extensionName[0];
+    assert(str::from(ptr<const uint8>($p:$)) == 'A');
+}
+
+test stype_default
+{
+    vk::ApplicationInfo $a = vk::ApplicationInfo();
+    assert($a->sType == vk::STRUCTURE_TYPE_APPLICATION_INFO);
+
+    vk::InstanceCreateInfo $c = vk::InstanceCreateInfo();
+    assert($c->sType == vk::STRUCTURE_TYPE_INSTANCE_CREATE_INFO);
+}
+
+test load_binds_create_instance
+{
+    assert(vk::load(&fakeGetproc) == 1);
+    vk::Instance $inst = vk::Instance::none();
+    vk::InstanceCreateInfo $info = vk::InstanceCreateInfo();
+    assert(vk::CreateInstance(&$info, null, &$inst)->value() == 7);
+}
+
+private function noneGetproc(ptr<const uint8> $name) : ptr<uint8>
+{
+    return null;
+}
+
+test load_resolves_nothing
+{
+    assert(vk::load(&noneGetproc) == 0);
+}
+
+#[tests: expects death]
+test partial_load_leaves_other_entries_as_die
+{
+    vk::load(&fakeGetproc);
+    vk::Instance $instance = vk::Instance::none();
+    vk::DestroyInstance($instance, null);
+}
+
+test handle_none_is_zero
+{
+    assert(vk::Instance::none()->handle == 0);
+    assert(vk::Device::none()->handle == 0);
+    assert(vk::Buffer::none()->handle == 0);
+}
+
+test pointer_fields_default_null
+{
+    vk::ApplicationInfo $a = vk::ApplicationInfo();
+    assert($a->pNext:$ == null);
+    assert($a->pApplicationName:$ == null);
+    assert($a->pEngineName:$ == null);
+    assert($a->apiVersion == 0);
+}
+
+test union_keeps_largest_member
+{
+    vk::ClearColorValue $c = vk::ClearColorValue();
+    $c->float32[0] = 1.0f;
+    $c->float32[1] = 0.0f;
+    $c->float32[2] = 0.0f;
+    $c->float32[3] = 1.0f;
+    assert($c->float32[0] == 1.0f);
+    assert($c->float32[3] == 1.0f);
+}
+
+test make_api_version_packs_fields
+{
+    uint32 $v = vk::makeApiVersion(1, 1, 2, 3);
+    assert((($v >> 29) & 7) == 1);
+    assert((($v >> 22) & 127) == 1);
+    assert((($v >> 12) & 1023) == 2);
+    assert(($v & 4095) == 3);
+}

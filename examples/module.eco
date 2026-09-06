@@ -1,0 +1,8 @@
+#[module: "libvulkan-examples"]
+#[depends: ".."]
+#[depends: "../../libglfw"]
+#[sources: ["frames.eco", "setup.eco", "devices.eco", "clear.eco", "triangle.eco"]]
+
+#[target: exe { name: "devices", entry: "devices.eco" }]
+#[target: exe { name: "clear", entry: "clear.eco" }]
+#[target: exe { name: "triangle", entry: "triangle.eco" }]
