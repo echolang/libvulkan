@@ -30,5 +30,9 @@ jobs:
       - name: Native build (generator)
         run: echoc build --target generate -o ${{ runner.temp }}/generate
 
+      # One committed file, LF. Windows checkout turns it into CRLF and the
+      # byte compare in --check dies even though the generator is the same.
       - name: Generator drift check
+        if: runner.os == 'Linux'
         run: echoc run --target generate -- --check
+
