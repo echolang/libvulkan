@@ -91,6 +91,8 @@ void *vk_open_loader(void)
         {0, "/usr/local/lib/libvulkan.1.dylib"},
         {0, "libvulkan.so.1"},
         {0, "libvulkan.so"},
+        {0, "/system/lib64/libvulkan.so"},
+        {0, "/system/lib/libvulkan.so"},
         {0, "vulkan-1.dll"},
     };
 
