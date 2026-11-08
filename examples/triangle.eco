@@ -156,7 +156,7 @@ glfw::terminate();
 
 internal function loadSpv(vk::Device $device, const string& $path) : vk::ShaderModule
 {
-    string $bytes = guard std::io::readfile($path) else ($e) {
+    string $bytes = guard std::fs::readfile($path) else ($e) {
         die($e->message());
     }
 
